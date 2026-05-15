@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Top-down (center) -->
+  <rect x="140" y="160" width="120" height="220" rx="28" />
+  <rect x="158" y="178" width="84" height="36" rx="12" />
+  <rect x="152" y="228" width="96" height="42" rx="12" />
+  <rect x="158" y="288" width="84" height="40" rx="12" />
+  <circle cx="170" cy="195" r="14" />
+  <circle cx="230" cy="195" r="14" />
+  <circle cx="170" cy="355" r="14" />
+  <circle cx="230" cy="355" r="14" />
+  <!-- Front (right) -->
+  <g transform="translate(310,120)">
+    <path d="M20 80c8-28 32-48 70-52 38 4 62 24 70 52v120c-6 32-32 52-70 56-38-4-64-24-70-56z" />
+    <rect x="38" y="38" width="44" height="20" rx="8" />
+    <rect x="28" y="92" width="64" height="12" rx="6" />
+    <circle cx="44" cy="132" r="8" />
+    <circle cx="76" cy="132" r="8" />
+  </g>
+  <!-- Rear (left) -->
+  <g transform="translate(10,120)">
+    <path d="M0 80c8-28 32-48 70-52 38 4 62 24 70 52v120c-6 32-32 52-70 56-38-4-64-24-70-56z" />
+    <rect x="18" y="42" width="44" height="18" rx="8" />
+    <rect x="8" y="92" width="64" height="12" rx="6" />
+    <rect x="22" y="124" width="18" height="10" rx="3" />
+    <rect x="40" y="124" width="18" height="10" rx="3" />
+  </g>
+  <!-- Side profile (bottom, driver side) -->
+  <g transform="translate(88,340) rotate(-0)">
+    <path d="M48 0h200c48 0 88 36 96 84H32C40 36 80 0 128 0z" />
+    <path d="M96 28h112c36 0 68 28 80 72H64c12-44 44-72 80-72z" />
+    <circle cx="90" cy="78" r="22" />
+    <circle cx="290" cy="78" r="22" />
+    <line x1="168" y1="30" x2="168" y2="72" stroke-width="1.5" />
+  </g>
+  <!-- Side profile (top, passenger  inverted layout) -->
+  <g transform="translate(88,8)">
+    <path d="M48 52h200c48 0 88-36 96-84H32c8 48 40 84 88 84z" />
+    <path d="M96 24h112c36 0 68-28 80-72H64c12 44 44 72 80 72z" />
+    <circle cx="90" cy="0" r="22" transform="translate(0,30)" />
+    <circle cx="290" cy="0" r="22" transform="translate(0,30)" />
+  </g>
+</svg>
