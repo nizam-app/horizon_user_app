@@ -30,6 +30,9 @@ import {
   X,
 } from 'lucide-react';
 
+import { requireApiBase } from './apiBase.js';
+import { fetchPrefillFromReference } from './claimPrefillApi.js';
+
 const checklistOptions = [
   { key: 'license', label: 'Driver License' },
   { key: 'taxiAuthority', label: 'Taxi Authority' },
@@ -407,9 +410,6 @@ const appendChecklistEvidenceFiles = (setList, fileList, source) => {
   setList((prev) => [...prev, ...added]);
 };
 
-const CLAIM_DRAFT_STORAGE_PREFIX = 'horizon-claim-draft-v1:';
-const SESSION_ACTIVE_CLAIM_CODE_KEY = 'horizon-active-claim-code';
-
 function generateClaimReferenceCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   const seg = (n) =>
@@ -418,80 +418,14 @@ function generateClaimReferenceCode() {
 }
 
 function normalizeClaimReferenceCode(raw) {
-  const alnum = String(raw ?? '')
+  let alnum = String(raw ?? '')
     .replace(/[^A-Za-z0-9]/g, '')
     .toUpperCase();
+  if (alnum.startsWith('HR') && alnum.length === 10) {
+    alnum = alnum.slice(2);
+  }
   if (alnum.length !== 8 || !/^[A-Z0-9]{8}$/.test(alnum)) return null;
   return `HR-${alnum.slice(0, 4)}-${alnum.slice(4)}`;
-}
-
-function readActiveClaimCodeFromSession() {
-  try {
-    const c = sessionStorage.getItem(SESSION_ACTIVE_CLAIM_CODE_KEY);
-    if (c && /^HR-[A-Z0-9]{4}-[A-Z0-9]{4}$/.test(c)) return c;
-  } catch {
-    /* ignore */
-  }
-  return null;
-}
-
-function writeActiveClaimCodeToSession(code) {
-  try {
-    if (code) sessionStorage.setItem(SESSION_ACTIVE_CLAIM_CODE_KEY, code);
-    else sessionStorage.removeItem(SESSION_ACTIVE_CLAIM_CODE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
-function getInitialClaimSaveCodeForSession() {
-  const existing = readActiveClaimCodeFromSession();
-  if (existing) return existing;
-  const fresh = generateClaimReferenceCode();
-  writeActiveClaimCodeToSession(fresh);
-  return fresh;
-}
-
-function buildClaimDraftSnapshot(
-  claim,
-  currentStep,
-  signatureDataUrl,
-  driverLicenseFrontAttachments,
-  driverLicenseBackAttachments,
-  taxiAuthorityAttachments,
-  registrationAttachments
-) {
-  return {
-    version: 1,
-    savedAt: new Date().toISOString(),
-    claim: JSON.parse(JSON.stringify(claim)),
-    currentStep,
-    signatureDataUrl: signatureDataUrl || '',
-    driverLicenseFrontAttachments: [...driverLicenseFrontAttachments],
-    driverLicenseBackAttachments: [...driverLicenseBackAttachments],
-    taxiAuthorityAttachments: [...taxiAuthorityAttachments],
-    registrationAttachments: [...registrationAttachments],
-  };
-}
-
-function persistClaimDraft(code, snapshot) {
-  try {
-    localStorage.setItem(CLAIM_DRAFT_STORAGE_PREFIX + code, JSON.stringify(snapshot));
-  } catch (e) {
-    console.warn('Claim draft save failed', e);
-  }
-}
-
-function loadClaimDraftSnapshot(code) {
-  try {
-    const raw = localStorage.getItem(CLAIM_DRAFT_STORAGE_PREFIX + code);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || data.version !== 1 || !data.claim) return null;
-    return data;
-  } catch {
-    return null;
-  }
 }
 
 const MAX_OTHER_VEHICLES = 4;
@@ -1055,37 +989,12 @@ function App() {
     open: false,
     status: 'idle',
     referenceCode: null,
+    errorMessage: null,
+    emailSent: null,
   });
-  const [claimSaveCode, setClaimSaveCode] = useState(getInitialClaimSaveCodeForSession);
-  const [resumeCodeInput, setResumeCodeInput] = useState('');
-
-  useEffect(() => {
-    if (!claimSaveCode) return undefined;
-    const id = window.setTimeout(() => {
-      persistClaimDraft(
-        claimSaveCode,
-        buildClaimDraftSnapshot(
-          claim,
-          currentStep,
-          signatureDataUrl,
-          driverLicenseFrontAttachments,
-          driverLicenseBackAttachments,
-          taxiAuthorityAttachments,
-          registrationAttachments
-        )
-      );
-    }, 450);
-    return () => window.clearTimeout(id);
-  }, [
-    claimSaveCode,
-    claim,
-    currentStep,
-    signatureDataUrl,
-    driverLicenseFrontAttachments,
-    driverLicenseBackAttachments,
-    taxiAuthorityAttachments,
-    registrationAttachments,
-  ]);
+  const [prefillCodeInput, setPrefillCodeInput] = useState('');
+  const [prefillBusy, setPrefillBusy] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   useEffect(() => {
     const target = parseOtherVehicleCountForSync(claim.incident.numberOfVehicles);
@@ -1410,79 +1319,127 @@ function App() {
     setSignatureDataUrl('');
     setCurrentStep(0);
     setReviewPayload(null);
-    const nextCode = generateClaimReferenceCode();
-    setClaimSaveCode(nextCode);
-    writeActiveClaimCodeToSession(nextCode);
+    setPrefillCodeInput('');
   };
 
-  const applyResumeDraft = () => {
-    const code = normalizeClaimReferenceCode(resumeCodeInput);
+  const resetWizardForm = () => setShowResetConfirm(true);
+
+  const confirmResetWizard = () => {
+    setShowResetConfirm(false);
+    setNotice(null);
+    completeLocalReset();
+  };
+
+  const applyPrefillFromReference = async () => {
+    const rawInput = String(prefillCodeInput ?? '').trim();
+    const code = normalizeClaimReferenceCode(prefillCodeInput);
     if (!code) {
+      const compact = rawInput.replace(/[^A-Za-z0-9]/g, '').toUpperCase();
+      const looksLikeSubmittedRef = compact.startsWith('HRZ');
       setNotice({
         type: 'error',
-        message: 'Enter your 8-character code with or without hyphens (for example HR-A1B2-C3D4).',
+        message: looksLikeSubmittedRef
+          ? 'That value (HRZ-…) is our internal file number. Use your member claim reference from your confirmation (format HR-####-####).'
+          : 'Enter your claim reference with or without hyphens (for example HR-A1B2-C3D4).',
       });
       return;
     }
-    const snap = loadClaimDraftSnapshot(code);
-    if (!snap) {
+    setPrefillBusy(true);
+    try {
+      const prefill = await fetchPrefillFromReference(code);
+      if (!prefill?.memberVehicle && !prefill?.driver) {
+        setNotice({
+          type: 'error',
+          message: 'No claim found for that reference. Check the code from your submission confirmation.',
+        });
+        return;
+      }
+      setClaim((prev) => ({
+        ...prev,
+        memberVehicle: { ...prev.memberVehicle, ...(prefill.memberVehicle || {}) },
+        driver: { ...prev.driver, ...(prefill.driver || {}) },
+      }));
+      setPrefillCodeInput('');
+      setNotice({
+        type: 'success',
+        message:
+          'Your contact and licence details were filled in from your previous claim. Complete the rest of this form for your new incident.',
+      });
+    } catch (e) {
       setNotice({
         type: 'error',
         message:
-          'No saved draft found for that code on this browser. Use the same device and browser where you started, or check the code for typos.',
+          e?.message != null
+            ? String(e.message)
+            : 'Could not reach the server. Check your connection and API address.',
       });
-      return;
-    }
-    setClaim(snap.claim);
-    const maxIdx = wizardSteps.length - 1;
-    setCurrentStep(Math.max(0, Math.min(Number(snap.currentStep) || 0, maxIdx)));
-    setSignatureDataUrl(snap.signatureDataUrl || '');
-    setDriverLicenseFrontAttachments(snap.driverLicenseFrontAttachments ?? []);
-    setDriverLicenseBackAttachments(snap.driverLicenseBackAttachments ?? []);
-    setTaxiAuthorityAttachments(snap.taxiAuthorityAttachments ?? []);
-    setRegistrationAttachments(snap.registrationAttachments ?? []);
-    setClaimSaveCode(code);
-    writeActiveClaimCodeToSession(code);
-    setResumeCodeInput('');
-    setShowReviewModal(false);
-    setReviewPayload(null);
-    setNotice({
-      type: 'success',
-      message: 'Your saved claim has been restored. Continue from where you left off.',
-    });
-  };
-
-  const copyClaimSaveCode = async () => {
-    try {
-      await navigator.clipboard.writeText(claimSaveCode);
-      setNotice({ type: 'success', message: 'Reference code copied to clipboard.' });
-    } catch {
-      setNotice({
-        type: 'error',
-        message: 'Could not copy automatically. Please select and copy the code manually.',
-      });
+    } finally {
+      setPrefillBusy(false);
     }
   };
 
   const runSubmission = async (payload) => {
     setNotice(null);
-    const submittedReferenceCode = claimSaveCode;
+    const submittedReferenceCode = generateClaimReferenceCode();
     setShowReviewModal(false);
-    setSubmissionState({ open: true, status: 'pending', referenceCode: submittedReferenceCode });
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-    const success = true;
-
-    if (success) {
+    setSubmissionState({ open: true, status: 'pending', referenceCode: null, errorMessage: null, emailSent: null });
+    try {
+      const base = requireApiBase();
+      const res = await fetch(`${base}/v1/claims`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ intakeReference: submittedReferenceCode, claim: payload }),
+      });
+      let data = {};
+      try {
+        data = await res.json();
+      } catch {
+        /* non-JSON body */
+      }
+      if (!res.ok) {
+        const msg = typeof data?.error === 'string' ? data.error : `Submission failed (${res.status})`;
+        setNotice({ type: 'error', message: msg });
+        setSubmissionState({
+          open: true,
+          status: 'error',
+          referenceCode: null,
+          errorMessage: msg,
+          emailSent: null,
+        });
+        return;
+      }
+      const displayRef = data.intakeReference || submittedReferenceCode;
+      const emailSent = data.emailSent === true;
       window.__HORIZON_CLAIM_PAYLOAD__ = payload;
-      setNotice({ type: 'success', message: 'Claim lodged successfully.' });
-      setSubmissionState({ open: true, status: 'success', referenceCode: submittedReferenceCode });
+      setNotice({
+        type: 'success',
+        message: data.duplicate
+          ? 'This claim was already submitted. Your confirmation is shown below.'
+          : emailSent
+            ? 'Claim lodged successfully. A PDF confirmation was emailed to the office inbox.'
+            : 'Claim lodged successfully. Email could not be sent — check API mail settings.',
+      });
+      setSubmissionState({
+        open: true,
+        status: 'success',
+        referenceCode: displayRef,
+        errorMessage: null,
+        emailSent: data.duplicate ? null : emailSent,
+      });
       completeLocalReset();
-      return;
+    } catch (e) {
+      const errMsg =
+        e?.message != null ? String(e.message)
+        : 'Network error. Check that the API is running and that VITE_API_BASE_URL matches the server address.';
+      setNotice({ type: 'error', message: errMsg });
+        setSubmissionState({
+          open: true,
+          status: 'error',
+          referenceCode: null,
+          errorMessage: errMsg,
+          emailSent: null,
+        });
     }
-
-    setNotice({ type: 'error', message: 'Submission failed. Please review the form and try again.' });
-    setSubmissionState({ open: true, status: 'error', referenceCode: submittedReferenceCode });
   };
 
   const submitClaim = () => {
@@ -2219,10 +2176,20 @@ function App() {
           </div>
         )}
 
+        {showResetConfirm && (
+          <ConfirmDialog
+            title="Start a new claim?"
+            description="This clears everything on the form — checklist, incident details, sketches, uploads, and signature. Anything you have not submitted will be lost."
+            confirmLabel="Clear form and start over"
+            cancelLabel="Keep current form"
+            onConfirm={confirmResetWizard}
+            onCancel={() => setShowResetConfirm(false)}
+          />
+        )}
+
         {showReviewModal && reviewPayload && (
           <ReviewModal
             payload={reviewPayload}
-            claimReferenceCode={claimSaveCode}
             onClose={() => setShowReviewModal(false)}
             onConfirm={finalizeSubmission}
           />
@@ -2232,13 +2199,17 @@ function App() {
           <SubmissionStatusModal
             status={submissionState.status}
             referenceCode={submissionState.referenceCode}
-            onClose={() => setSubmissionState({ open: false, status: 'idle', referenceCode: null })}
+            errorMessage={submissionState.errorMessage}
+            emailSent={submissionState.emailSent}
+            onClose={() =>
+              setSubmissionState({ open: false, status: 'idle', referenceCode: null, errorMessage: null, emailSent: null })
+            }
             onRetry={() => {
-              setSubmissionState({ open: false, status: 'idle', referenceCode: null });
+              setSubmissionState({ open: false, status: 'idle', referenceCode: null, errorMessage: null, emailSent: null });
               if (reviewPayload) setShowReviewModal(true);
             }}
             onStartNew={() => {
-              setSubmissionState({ open: false, status: 'idle', referenceCode: null });
+              setSubmissionState({ open: false, status: 'idle', referenceCode: null, errorMessage: null, emailSent: null });
               setNotice(null);
               completeLocalReset();
             }}
@@ -2248,57 +2219,63 @@ function App() {
         <main className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,260px)_1fr] xl:gap-6">
           <div className="overflow-hidden rounded-2xl border border-stone-200/90 bg-white shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] ring-1 ring-stone-100 xl:col-span-2">
             <div className="border-b border-teal-800/10 bg-gradient-to-r from-teal-50/90 to-white px-4 py-3 sm:px-6 sm:py-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-teal-800">Save &amp; continue later</p>
-                  <p className="mt-0.5 text-sm font-semibold text-slate-900">Claim reference code</p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 shadow-sm">
-                  <span className="font-mono text-sm font-bold tracking-[0.14em] text-slate-900 sm:text-base">{claimSaveCode}</span>
-                  <button
-                    type="button"
-                    onClick={copyClaimSaveCode}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-800 transition hover:border-teal-300 hover:bg-teal-50/80"
-                  >
-                    <Copy size={14} aria-hidden />
-                    Copy
-                  </button>
-                </div>
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-teal-800">Returning member</p>
+                <p className="mt-0.5 text-sm font-semibold text-slate-900">Pre-fill from a previous claim</p>
               </div>
             </div>
             <div className="px-4 py-4 sm:px-6 sm:py-5">
               <p className="max-w-3xl text-sm leading-relaxed text-slate-600">
-                Save this code before you submit. On your next visit in <span className="font-semibold text-slate-800">this same browser</span>, enter it below to reload your answers, sketch, damage map, and file list.
+                Submitted a claim before? Enter the <span className="font-semibold text-slate-800">claim reference</span> from your submission confirmation (format HR-####-####). We will fill in your member, driver, and licence contact details for this <span className="font-semibold text-slate-800">new</span> claim — not your previous incident, sketch, or uploads.
               </p>
               <p className="mt-2 text-xs leading-relaxed text-slate-500">
-                Progress saves automatically. Clearing browser data removes drafts. Cross-device restore needs a server later.
+                Your reference code is created when you submit. Save it from the confirmation screen if you may claim again later.
+              </p>
+              <p className="mt-2 text-xs text-slate-600">
+                <button
+                  type="button"
+                  onClick={resetWizardForm}
+                  className="font-semibold text-teal-800 underline decoration-teal-300 underline-offset-2 transition hover:text-teal-950"
+                >
+                  Start a new claim
+                </button>
+                <span className="text-slate-500"> — clears the form without using a reference code.</span>
               </p>
               <div className="mt-5 flex flex-col gap-3 rounded-xl border border-stone-200 bg-stone-50/80 p-3 sm:flex-row sm:items-center sm:gap-4 sm:p-4">
-                <label htmlFor="resume-claim-code" className="sr-only">
-                  Enter a previously saved claim code
+                <label htmlFor="prefill-claim-code" className="sr-only">
+                  Enter your claim reference from a previous submission
                 </label>
                 <input
-                  id="resume-claim-code"
+                  id="prefill-claim-code"
                   type="text"
                   autoComplete="off"
                   spellCheck={false}
+                  disabled={prefillBusy}
                   placeholder="Enter code (e.g. HR-A1B2-C3D4)"
-                  value={resumeCodeInput}
-                  onChange={(e) => setResumeCodeInput(e.target.value)}
+                  value={prefillCodeInput}
+                  onChange={(e) => setPrefillCodeInput(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      applyResumeDraft();
+                      applyPrefillFromReference();
                     }
                   }}
-                  className="min-h-[44px] w-full min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20"
+                  className="min-h-[44px] w-full min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20 disabled:cursor-not-allowed disabled:opacity-60"
                 />
                 <button
                   type="button"
-                  onClick={applyResumeDraft}
-                  className="inline-flex min-h-[44px] shrink-0 items-center justify-center rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 sm:px-6"
+                  onClick={applyPrefillFromReference}
+                  disabled={prefillBusy}
+                  className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60 sm:px-6"
                 >
-                  Restore
+                  {prefillBusy ? (
+                    <>
+                      <LoaderCircle size={16} className="animate-spin" aria-hidden />
+                      Loading…
+                    </>
+                  ) : (
+                    'Pre-fill details'
+                  )}
                 </button>
               </div>
             </div>
@@ -2534,7 +2511,65 @@ function SummaryItem({ label, value }) {
   );
 }
 
-function ReviewModal({ payload, onClose, onConfirm, claimReferenceCode }) {
+function ConfirmDialog({ title, description, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === 'Escape') onCancel();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/55 px-4 backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="confirm-dialog-title"
+      onClick={onCancel}
+    >
+      <div
+        className="w-full max-w-md overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl ring-1 ring-stone-100"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-amber-100 bg-gradient-to-br from-amber-50/90 to-white px-6 py-5 sm:px-7">
+          <div className="flex items-start gap-4">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-amber-100 text-amber-900">
+              <AlertTriangle size={22} aria-hidden />
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-800">Confirm action</p>
+              <h3 id="confirm-dialog-title" className="mt-1 text-xl font-semibold tracking-tight text-slate-950">
+                {title}
+              </h3>
+            </div>
+          </div>
+        </div>
+        <div className="px-6 py-5 sm:px-7">
+          <p className="text-sm leading-relaxed text-slate-600">{description}</p>
+        </div>
+        <div className="flex flex-col-reverse gap-2 border-t border-stone-100 bg-stone-50/80 px-6 py-4 sm:flex-row sm:justify-end sm:gap-3 sm:px-7">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-slate-300 bg-white px-5 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+          >
+            {cancelLabel}
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ReviewModal({ payload, onClose, onConfirm }) {
   const vehicleSummary = [payload.memberVehicle.plateNumber, payload.memberVehicle.make, payload.memberVehicle.model]
     .filter(Boolean)
     .join(' - ') || 'Not entered';
@@ -2690,16 +2725,6 @@ function ReviewModal({ payload, onClose, onConfirm, claimReferenceCode }) {
           </div>
         </div>
 
-        {claimReferenceCode ? (
-          <div className="border-t border-amber-100 bg-amber-50/90 px-6 py-4 sm:px-8">
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-900/80">Your claim reference</p>
-            <p className="mt-1 text-sm text-amber-950">
-              Save this code before you submit. When you come back to this page in the same browser, enter it below to restore your form and checklist file list.
-            </p>
-            <p className="mt-2 font-mono text-lg font-bold tracking-wider text-slate-900">{claimReferenceCode}</p>
-          </div>
-        ) : null}
-
         <div className="flex flex-col gap-3 border-t border-slate-100 px-6 py-5 sm:flex-row sm:justify-end sm:px-8">
           <button
             type="button"
@@ -2721,7 +2746,7 @@ function ReviewModal({ payload, onClose, onConfirm, claimReferenceCode }) {
   );
 }
 
-function SubmissionStatusModal({ status, referenceCode, onClose, onRetry, onStartNew }) {
+function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent, onClose, onRetry, onStartNew }) {
   if (status === 'pending') {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 backdrop-blur-sm">
@@ -2755,8 +2780,16 @@ function SubmissionStatusModal({ status, referenceCode, onClose, onRetry, onStar
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-rose-700">Submission failed</p>
                   <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">We could not submit the claim</h3>
                   <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-                    Please review the form details and try again. Once a real backend is connected, this modal can show the exact server error too.
+                    Please review the form details and try again.
+                    {errorMessage
+                      ? ' The message below came from your API or browser so you know what failed.'
+                      : ' If problems continue, check that the Horizon API is reachable (see environment variable VITE_API_BASE_URL).'}
                   </p>
+                  {errorMessage ? (
+                    <p className="mt-3 max-w-xl whitespace-pre-wrap break-words rounded-md border border-rose-100 bg-white/90 px-3 py-2 font-mono text-xs leading-snug text-rose-950">
+                      {errorMessage}
+                    </p>
+                  ) : null}
                 </div>
               </div>
               <button type="button" onClick={onClose} className="rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50">
@@ -2804,11 +2837,19 @@ function SubmissionStatusModal({ status, referenceCode, onClose, onRetry, onStar
           </div>
         </div>
 
+        {emailSent === false ? (
+          <div className="border-t border-amber-100 bg-amber-50 px-6 py-4 sm:px-8">
+            <p className="text-sm font-medium text-amber-950">
+              Your claim was saved, but the confirmation email could not be sent. Check the API server email settings in Render.
+            </p>
+          </div>
+        ) : null}
+
         {referenceCode ? (
           <div className="border-t border-emerald-100 bg-white px-6 py-5 sm:px-8">
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Your claim reference (save this)</p>
             <p className="mt-1 text-sm text-slate-600">
-              This was the code for the claim you just submitted. Keep it for your records. A new code is shown on the form when you start another claim.
+              Save this code for your records. On a future visit, enter it at the top of the claim form to pre-fill your contact and licence details for a new claim.
             </p>
             <div className="mt-3 flex flex-wrap items-center gap-2">
               <span className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-base font-bold tracking-[0.12em] text-slate-900 sm:text-lg">
