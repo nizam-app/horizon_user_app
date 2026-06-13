@@ -1,45 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120" width="400" height="120">
-  <!-- Horizontal side-view sedan, faces right; transparent background -->
-  <ellipse cx="200" cy="102" rx="170" ry="6" fill="#000" opacity="0.13"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 168 60" width="168" height="60">
+  <!-- Top-down sedan, faces right — your vehicle (red) -->
+  <ellipse cx="84" cy="54" rx="58" ry="4" fill="#0f172a" opacity="0.1"/>
   <path fill="#dc2626" stroke="#991b1b" stroke-width="1.15" stroke-linejoin="round"
-    d="M 48 88
-       L 54 60
-       L 92 54
-       L 128 52
-       L 150 32
-       L 162 29
-       L 268 26
-       L 314 38
-       L 354 50
-       L 368 66
-       L 372 82
-       L 372 90
-       L 358 92
-       L 342 92
-       L 334 76
-       L 318 72
-       L 302 76
-       L 292 92
-       L 258 92
-       L 248 76
-       L 228 72
-       L 212 76
-       L 202 92
-       L 168 92
-       L 158 76
-       L 138 72
-       L 122 76
-       L 112 92
-       L 78 92
-       L 68 76
-       L 56 76
-       L 48 84
+    d="M 14 30
+       C 14 19, 24 11, 38 11
+       L 130 11
+       C 144 11, 154 19, 154 30
+       C 154 41, 144 49, 130 49
+       L 38 49
+       C 24 49, 14 41, 14 30
        Z"/>
-  <path fill="#0f172a" opacity="0.9"
-    d="M 152 34 L 262 28 L 308 40 L 300 50 L 138 50 Z"/>
-  <path fill="#0f172a" opacity="0.4" d="M 92 54 L 128 52 L 134 50 L 96 56 Z"/>
-  <circle cx="120" cy="90" r="16" fill="#0a0a0a"/>
-  <circle cx="276" cy="90" r="16" fill="#0a0a0a"/>
-  <circle cx="120" cy="90" r="7" fill="#52525b"/>
-  <circle cx="276" cy="90" r="7" fill="#52525b"/>
+  <path fill="#fca5a5" opacity="0.28"
+    d="M 40 13 L 128 13 C 136 13, 142 16, 146 20 L 40 20 Z"/>
+  <path fill="#1e293b" opacity="0.9"
+    d="M 42 17 L 56 15 L 68 15 L 76 19 L 76 27 L 68 29 L 56 29 L 42 27 Z"/>
+  <path fill="#1e293b" opacity="0.82"
+    d="M 84 15 L 98 15 L 112 15 L 120 19 L 120 27 L 112 29 L 98 29 L 84 27 Z"/>
+  <rect x="146" y="24" width="5" height="7" rx="1.5" fill="#fef9c3" opacity="0.9"/>
+  <ellipse cx="34" cy="17" rx="4.5" ry="2.8" fill="#27272a"/>
+  <ellipse cx="34" cy="43" rx="4.5" ry="2.8" fill="#27272a"/>
+  <ellipse cx="134" cy="17" rx="4.5" ry="2.8" fill="#27272a"/>
+  <ellipse cx="134" cy="43" rx="4.5" ry="2.8" fill="#27272a"/>
+  <ellipse cx="34" cy="17" rx="2" ry="1.2" fill="#71717a"/>
+  <ellipse cx="34" cy="43" rx="2" ry="1.2" fill="#71717a"/>
+  <ellipse cx="134" cy="17" rx="2" ry="1.2" fill="#71717a"/>
+  <ellipse cx="134" cy="43" rx="2" ry="1.2" fill="#71717a"/>
 </svg>

@@ -4,18 +4,23 @@
 
 :root {
   color-scheme: light;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
 }
 
 html {
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   font-family: Inter, 'Segoe UI', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   min-height: 100vh;
+  min-height: 100dvh;
   margin: 0;
-  background-color: #f4f6f8;
+  background-color: #f7f6f2;
   color: #111827;
+  padding-top: var(--safe-top);
 }
 
 button,
@@ -32,4 +37,21 @@ textarea {
 ::selection {
   background: #134e4a;
   color: #ffffff;
+}
+
+@layer utilities {
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
+  }
+  .pb-nav-safe {
+    padding-bottom: calc(5.75rem + var(--safe-bottom));
+  }
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
 }

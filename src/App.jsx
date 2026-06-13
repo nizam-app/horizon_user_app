@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -7,11 +7,13 @@ import {
   Car,
   Check,
   CheckCircle2,
+  ChevronDown,
   LoaderCircle,
   ClipboardCheck,
   Copy,
   FileCheck2,
   FlipHorizontal,
+  HelpCircle,
   MapPin,
   MousePointer2,
   PenLine,
@@ -59,13 +61,62 @@ const trafficControlOptions = ['None', 'Stop Sign', 'Traffic Lights', 'Roundabou
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const wizardSteps = [
-  { id: 'checklist', title: 'Checklist', icon: ClipboardCheck },
-  { id: 'member', title: 'Member & Vehicle', icon: Car },
-  { id: 'driver', title: 'Driver Details', icon: UserRound },
-  { id: 'incident', title: 'Incident Details', icon: AlertTriangle },
-  { id: 'accidentSketch', title: 'Sketch Diagram of Accident', icon: PenTool },
-  { id: 'others', title: 'Damage & Other Parties', icon: Users },
-  { id: 'declaration', title: 'Declaration', icon: PencilLine },
+  {
+    id: 'checklist',
+    title: 'Documents checklist',
+    shortTitle: 'Documents',
+    icon: ClipboardCheck,
+    description: 'Tick what you have ready and upload photos. You can come back to finish later.',
+    tip: 'Not everything is required today — mark what applies to your situation.',
+  },
+  {
+    id: 'member',
+    title: 'Your vehicle',
+    shortTitle: 'Vehicle',
+    icon: Car,
+    description: 'Your member details, vehicle registration, and how we can reach you.',
+    tip: 'Use the same details as on your registration papers.',
+  },
+  {
+    id: 'driver',
+    title: 'Driver details',
+    shortTitle: 'Driver',
+    icon: UserRound,
+    description: 'Who was driving, licence information, and any police or liability details.',
+    tip: 'If you were not the driver, say how you are related to the vehicle owner.',
+  },
+  {
+    id: 'incident',
+    title: 'What happened',
+    shortTitle: 'Incident',
+    icon: AlertTriangle,
+    description: 'When and where the accident happened, road conditions, and a short description.',
+    tip: 'Write it in your own words — approximate time and location are fine.',
+  },
+  {
+    id: 'accidentSketch',
+    title: 'Accident sketch',
+    shortTitle: 'Sketch',
+    icon: PenTool,
+    description: 'Draw a simple diagram of the scene or upload a photo of a sketch.',
+    tip: 'Show where each vehicle was and the direction of travel.',
+  },
+  {
+    id: 'others',
+    title: 'Damage & other parties',
+    shortTitle: 'Damage',
+    icon: Users,
+    description: 'Mark damage on your vehicle, towing details, and other people involved.',
+    tip: 'Tap the diagram to place damage markers, or draw directly on the image.',
+  },
+  {
+    id: 'declaration',
+    title: 'Review & sign',
+    shortTitle: 'Sign',
+    icon: PencilLine,
+    description: 'Check the summary, agree to the declaration, and sign to submit.',
+    tip: 'Use Preview to double-check everything before you submit.',
+  },
 ];
 
 const blankOtherParty = () => ({
@@ -113,7 +164,54 @@ const joinDriverPostalAddress = (driver) => {
   const locality = [suburb, state, postcode].filter(Boolean).join(' ');
   return [street, locality].filter(Boolean).join(', ');
 };
-const mapChecklistFileMeta = (list) => list.map(({ name, source }) => ({ name, source }));
+const mapChecklistFileMeta = (list) =>
+  (list ?? []).map(({ name, source, mimeType, dataUrl }) => ({
+    name,
+    source,
+    ...(mimeType ? { mimeType } : {}),
+    ...(typeof dataUrl === 'string' && dataUrl.startsWith('data:') ? { dataUrl } : {}),
+  }));
+
+const MAX_ATTACHMENT_DATA_URL_BYTES = 3_500_000;
+
+const readFileAsDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+
+const appendChecklistEvidenceFiles = async (setList, fileList, source) => {
+  if (!fileList?.length) return;
+  const files = Array.from(fileList);
+  const added = await Promise.all(
+    files.map(async (file) => {
+      const row = {
+        id: `${source}-${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 9)}`,
+        name: file.name,
+        source,
+        mimeType: file.type || '',
+      };
+      const canEmbed =
+        file.type.startsWith('image/') ||
+        file.type === 'application/pdf' ||
+        /\.(jpe?g|png|gif|webp|bmp|heic|pdf)$/i.test(file.name);
+      if (canEmbed) {
+        try {
+          const dataUrl = await readFileAsDataUrl(file);
+          if (dataUrl && dataUrl.length <= MAX_ATTACHMENT_DATA_URL_BYTES) {
+            row.dataUrl = dataUrl;
+          }
+        } catch {
+          /* keep filename metadata */
+        }
+      }
+      return row;
+    }),
+  );
+  setList((prev) => [...prev, ...added]);
+};
 
 const accidentSketchSummaryForDeclaration = (sketch) => {
   const drawn = Boolean(sketch?.diagramDataUrl);
@@ -138,16 +236,167 @@ const SKETCH_CANVAS_HEIGHT = 540;
 const SKETCH_INK = '#1e293b';
 const SKETCH_LINE_WIDTH = 3.2;
 const SKETCH_LABEL_FONT_PX = 24;
-/** Vehicle stamp box on sketch canvas (long axis = length along the road). */
-const SKETCH_VEHICLE_BODY_W = 104;
-const SKETCH_VEHICLE_BODY_H = 54;
+/** Side-profile cutout stamps — your = red (faces right), other = orange (faces left). */
+const SKETCH_VEHICLE_BODY_W = 140;
+const SKETCH_VEHICLE_BODY_H = 58;
+const SKETCH_CAR_SELF_SRC = `${import.meta.env.BASE_URL}sketch/cars/car-self.png`;
+const SKETCH_CAR_OTHER_SRC = `${import.meta.env.BASE_URL}sketch/cars/car-other.png`;
+
+const SKETCH_VEHICLE_PALETTE = {
+  self: {
+    bodyTop: '#ef4444',
+    bodyBottom: '#b91c1c',
+    stroke: '#7f1d1d',
+    glass: '#0f172a',
+    glassOpacity: 0.88,
+    wheel: '#18181b',
+    hub: '#52525b',
+    headlight: '#fef08a',
+    taillight: '#fecaca',
+    mirror: '#991b1b',
+  },
+  other: {
+    bodyTop: '#3b82f6',
+    bodyBottom: '#1d4ed8',
+    stroke: '#1e3a8a',
+    glass: '#0f172a',
+    glassOpacity: 0.88,
+    wheel: '#18181b',
+    hub: '#52525b',
+    headlight: '#fef08a',
+    taillight: '#bfdbfe',
+    mirror: '#1e40af',
+  },
+};
+
+/** Sedan plan-view body outline — faces +X, centered at origin, ~132×52 logical units. */
+function traceSketchVehicleBodyPath(ctx) {
+  ctx.beginPath();
+  ctx.moveTo(62, 0);
+  ctx.bezierCurveTo(66, -5, 65.5, -14, 58, -21);
+  ctx.bezierCurveTo(52, -25, 46, -26, 38, -26);
+  ctx.lineTo(22, -26);
+  ctx.bezierCurveTo(12, -27, 4, -27, -6, -26.5);
+  ctx.bezierCurveTo(-18, -26, -28, -26, -38, -24.5);
+  ctx.bezierCurveTo(-50, -23, -58, -18, -63, -10);
+  ctx.bezierCurveTo(-66, -4, -66, 4, -63, 10);
+  ctx.bezierCurveTo(-58, 18, -50, 23, -38, 24.5);
+  ctx.bezierCurveTo(-28, 26, -18, 26, -6, 26.5);
+  ctx.bezierCurveTo(4, 27, 12, 27, 22, 26);
+  ctx.lineTo(38, 26);
+  ctx.bezierCurveTo(46, 26, 52, 25, 58, 21);
+  ctx.bezierCurveTo(65.5, 14, 66, 5, 62, 0);
+  ctx.closePath();
+}
+
+function drawSketchVehicleGlyph(ctx, role, bw, bh) {
+  const palette = SKETCH_VEHICLE_PALETTE[role === 'self' ? 'self' : 'other'];
+  const sx = bw / 132;
+  const sy = bh / 52;
+
+  ctx.save();
+  ctx.scale(sx, sy);
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.08)';
+  ctx.beginPath();
+  ctx.ellipse(0, 30, 52, 4.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  traceSketchVehicleBodyPath(ctx);
+  const bodyGrad = ctx.createLinearGradient(0, -26, 0, 26);
+  bodyGrad.addColorStop(0, palette.bodyTop);
+  bodyGrad.addColorStop(1, palette.bodyBottom);
+  ctx.fillStyle = bodyGrad;
+  ctx.fill();
+  ctx.strokeStyle = palette.stroke;
+  ctx.lineWidth = 1.4;
+  ctx.stroke();
+
+  ctx.fillStyle = `rgba(15, 23, 42, ${palette.glassOpacity})`;
+  ctx.beginPath();
+  ctx.moveTo(14, -18);
+  ctx.lineTo(28, -20);
+  ctx.lineTo(36, -16);
+  ctx.lineTo(36, 16);
+  ctx.lineTo(28, 20);
+  ctx.lineTo(14, 18);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.moveTo(42, -19);
+  ctx.lineTo(54, -20);
+  ctx.lineTo(58, -16);
+  ctx.lineTo(58, 16);
+  ctx.lineTo(54, 20);
+  ctx.lineTo(42, 19);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+  ctx.fillRect(-20, -3, 72, 6);
+
+  const wheelPositions = [
+    [34, -27], [34, 27], [-34, -27], [-34, 27],
+  ];
+  wheelPositions.forEach(([wx, wy]) => {
+    ctx.fillStyle = palette.wheel;
+    ctx.beginPath();
+    ctx.ellipse(wx, wy, 6.5, 4.2, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = palette.hub;
+    ctx.beginPath();
+    ctx.ellipse(wx, wy, 2.8, 1.8, 0, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  ctx.fillStyle = palette.mirror;
+  ctx.beginPath();
+  ctx.ellipse(20, -28, 3.2, 1.8, 0.2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(20, 28, 3.2, 1.8, -0.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = palette.headlight;
+  ctx.beginPath();
+  ctx.ellipse(59, -14, 3.5, 2.2, 0.3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(59, 14, 3.5, 2.2, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = palette.taillight;
+  ctx.beginPath();
+  ctx.ellipse(-61, -12, 2.8, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(-61, 12, 2.8, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawSketchCarPhoto(ctx, carImage, bw, bh) {
+  const iw = carImage.naturalWidth;
+  const ih = carImage.naturalHeight;
+  if (!iw || !ih) return;
+  const scale = Math.min(bw / iw, bh / ih);
+  const dw = iw * scale;
+  const dh = ih * scale;
+  const prevSmooth = ctx.imageSmoothingEnabled;
+  const prevQuality = ctx.imageSmoothingQuality;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(carImage, -dw / 2, -dh / 2, dw, dh);
+  ctx.imageSmoothingEnabled = prevSmooth;
+  ctx.imageSmoothingQuality = prevQuality;
+}
+
 /** Default rotation step: 15° — fast alignment for accident diagrams. */
 const SKETCH_VEHICLE_ROTATE_STEP = Math.PI / 12;
 /** Fine step with Shift held: 5° — small corrections without cluttering the default. */
 const SKETCH_VEHICLE_ROTATE_STEP_FINE = Math.PI / 36;
-/** Side-view (horizontal) sedan stamps, SVG, transparent — your = red, other = blue; same silhouette, mirrored on canvas for opposite direction. */
-const SKETCH_CAR_SELF_IMAGE_SRC = `${import.meta.env.BASE_URL}sketch/cars/car-self.svg`;
-const SKETCH_CAR_OTHER_IMAGE_SRC = `${import.meta.env.BASE_URL}sketch/cars/car-other.svg`;
 
 function emptySketchModel() {
   return { lines: [], vehicles: [], labels: [] };
@@ -177,13 +426,10 @@ function drawSketchRoundRectPath(ctx, x, y, w, h, r) {
 }
 
 /**
- * Horizontal mirror in local space after rotate: “other” defaults mirrored (opposite facing);
- * optional flipX toggles mirror for either role.
+ * Horizontal mirror when flipX is set (Flip tool in Select mode).
  */
 function sketchVehicleMirrorX(v) {
-  const self = v.role === 'self';
-  const flip = Boolean(v.flipX);
-  return self ? flip : !flip;
+  return Boolean(v.flipX);
 }
 
 /**
@@ -213,122 +459,37 @@ function drawSketchVehicleSelectionHalo(ctx, v) {
   ctx.rotate(v.angle ?? 0);
   if (sketchVehicleMirrorX(v)) ctx.scale(-1, 1);
   ctx.strokeStyle = 'rgba(13, 148, 136, 0.95)';
-  ctx.lineWidth = 2.25;
-  ctx.setLineDash([7, 5]);
-  drawSketchRoundRectPath(ctx, -bw / 2 - 5, -bh / 2 - 5, bw + 10, bh + 10, 14);
+  ctx.lineWidth = 2.2;
+  ctx.setLineDash([6, 4]);
+  drawSketchRoundRectPath(ctx, -bw / 2 - 4, -bh / 2 - 4, bw + 8, bh + 8, 10);
   ctx.stroke();
   ctx.setLineDash([]);
   ctx.restore();
 }
 
-/** Vector fallback if car image has not loaded yet. */
-function drawSketchVehicleShapeVector(ctx, v) {
-  const x = v.x;
-  const y = v.y;
-  const self = v.role === 'self';
-  const bw = SKETCH_VEHICLE_BODY_W;
-  const bh = SKETCH_VEHICLE_BODY_H;
-  const bodyR = 22;
-  const wheelW = 12;
-  const wheelH = 18;
-
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.rotate(v.angle ?? 0);
-  if (sketchVehicleMirrorX(v)) ctx.scale(-1, 1);
-
-  ctx.shadowColor = 'rgba(15, 23, 42, 0.14)';
-  ctx.shadowBlur = 12;
-  ctx.shadowOffsetY = 4;
-  const grad = ctx.createLinearGradient(0, -bh / 2, 0, bh / 2);
-  grad.addColorStop(0, self ? 'rgba(30, 41, 59, 0.14)' : 'rgba(255, 255, 255, 0.98)');
-  grad.addColorStop(1, self ? 'rgba(30, 41, 59, 0.09)' : 'rgba(248, 250, 252, 0.98)');
-  ctx.fillStyle = grad;
-  ctx.strokeStyle = self ? 'rgba(13, 148, 136, 0.9)' : SKETCH_INK;
-  ctx.lineWidth = self ? 2.8 : 2.4;
-  drawSketchRoundRectPath(ctx, -bw / 2, -bh / 2, bw, bh, bodyR);
-  ctx.fill();
-  ctx.stroke();
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  const wheelInsetX = 18;
-  const wheelInsetY = 14;
-  const wheelXs = [-bw / 2 + wheelInsetX, bw / 2 - wheelInsetX];
-  const wheelYs = [-bh / 2 + wheelInsetY, bh / 2 - wheelInsetY];
-  ctx.fillStyle = '#0b1220';
-  wheelXs.forEach((wx) => {
-    wheelYs.forEach((wy) => {
-      drawSketchRoundRectPath(ctx, wx - wheelW / 2, wy - wheelH / 2, wheelW, wheelH, 6);
-      ctx.fill();
-    });
-  });
-
-  ctx.fillStyle = self ? 'rgba(15, 23, 42, 0.08)' : 'rgba(226, 232, 240, 0.8)';
-  drawSketchRoundRectPath(ctx, -bw / 2 + 26, -bh / 2 + 14, bw - 52, bh - 28, 16);
-  ctx.fill();
-
-  ctx.strokeStyle = 'rgba(100, 116, 139, 0.85)';
-  ctx.lineWidth = 1.6;
-  ctx.beginPath();
-  ctx.moveTo(0, -bh / 2 + 16);
-  ctx.lineTo(0, bh / 2 - 16);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-/** Like CSS `object-fit: cover` — works for photos and high-res plan-view SVGs. */
-function drawSketchCarPhotoCover(ctx, carImage, bw, bh) {
-  const iw = carImage.naturalWidth;
-  const ih = carImage.naturalHeight;
-  if (!iw || !ih) return;
-  const scale = Math.max(bw / iw, bh / ih);
-  const sw = bw / scale;
-  const sh = bh / scale;
-  const sx = Math.max(0, (iw - sw) / 2);
-  const sy = Math.max(0, (ih - sh) / 2);
-  const prevSmooth = ctx.imageSmoothingEnabled;
-  const prevQuality = ctx.imageSmoothingQuality;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(carImage, sx, sy, sw, sh, -bw / 2, -bh / 2, bw, bh);
-  ctx.imageSmoothingEnabled = prevSmooth;
-  ctx.imageSmoothingQuality = prevQuality;
-}
-
 function drawSketchVehicleShape(ctx, v, carImages) {
   const bw = SKETCH_VEHICLE_BODY_W;
   const bh = SKETCH_VEHICLE_BODY_H;
-  const self = v.role === 'self';
-  const carImage = self ? carImages?.self : carImages?.other;
-  if (carImage && carImage.complete && carImage.naturalWidth > 0) {
-    ctx.save();
-    ctx.translate(v.x, v.y);
-    ctx.rotate(v.angle ?? 0);
-    if (sketchVehicleMirrorX(v)) ctx.scale(-1, 1);
-    ctx.shadowColor = 'rgba(15, 23, 42, 0.12)';
-    ctx.shadowBlur = 8;
-    ctx.shadowOffsetY = 3;
-    ctx.beginPath();
-    drawSketchRoundRectPath(ctx, -bw / 2, -bh / 2, bw, bh, 12);
-    ctx.clip();
-    drawSketchCarPhotoCover(ctx, carImage, bw, bh);
-    ctx.restore();
+  const role = v.role === 'self' ? 'self' : 'other';
+  const carImage = role === 'self' ? carImages?.self : carImages?.other;
 
-    ctx.save();
-    ctx.translate(v.x, v.y);
-    ctx.rotate(v.angle ?? 0);
-    if (sketchVehicleMirrorX(v)) ctx.scale(-1, 1);
-    ctx.strokeStyle = self ? 'rgba(13, 148, 136, 0.75)' : 'rgba(15, 23, 42, 0.35)';
-    ctx.lineWidth = self ? 2.5 : 2;
-    ctx.beginPath();
-    drawSketchRoundRectPath(ctx, -bw / 2, -bh / 2, bw, bh, 12);
-    ctx.stroke();
-    ctx.restore();
-    return;
+  ctx.save();
+  ctx.translate(v.x, v.y);
+  ctx.rotate(v.angle ?? 0);
+  if (sketchVehicleMirrorX(v)) ctx.scale(-1, 1);
+
+  if (carImage && carImage.complete && carImage.naturalWidth > 0) {
+    ctx.shadowColor = 'rgba(15, 23, 42, 0.15)';
+    ctx.shadowBlur = 6;
+    ctx.shadowOffsetY = 2;
+    drawSketchCarPhoto(ctx, carImage, bw, bh);
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  } else {
+    drawSketchVehicleGlyph(ctx, role, bw, bh);
   }
-  drawSketchVehicleShapeVector(ctx, v);
+
+  ctx.restore();
 }
 
 function drawSketchLabel(ctx, lb) {
@@ -395,20 +556,10 @@ function redrawAccidentSketch(canvas, model, carImages, selectedVehicleId) {
   }
 }
 
-const VEHICLE_DAMAGE_DIAGRAM_SRC = '/vehicle-damage-diagram.png';
+const VEHICLE_DAMAGE_DIAGRAM_SRC = '/vehicle-damage-diagram.svg';
 
 const damagePhotoCountFromState = (sceneList, detailList) =>
   (sceneList?.length ?? 0) + (detailList?.length ?? 0);
-
-const appendChecklistEvidenceFiles = (setList, fileList, source) => {
-  if (!fileList?.length) return;
-  const added = Array.from(fileList).map((file) => ({
-    id: `${source}-${file.name}-${file.lastModified}-${Math.random().toString(36).slice(2, 9)}`,
-    name: file.name,
-    source,
-  }));
-  setList((prev) => [...prev, ...added]);
-};
 
 function generateClaimReferenceCode() {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -467,15 +618,15 @@ function EvidenceUploadPanel({
         <button
           type="button"
           onClick={() => uploadInputRef.current?.click()}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-teal-600 bg-white px-3 py-2 text-xs font-semibold text-teal-900 transition hover:bg-teal-50"
+          className="touch-target inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-teal-600 bg-white px-3 py-2.5 text-xs font-semibold text-teal-900 transition hover:bg-teal-50 sm:py-2"
         >
           <Upload size={16} />
-          Upload
+          Choose file
         </button>
         <button
           type="button"
           onClick={() => cameraInputRef.current?.click()}
-          className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-teal-600 bg-teal-700 px-3 py-2 text-xs font-semibold text-white transition hover:bg-teal-800"
+          className="touch-target inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-teal-600 bg-teal-700 px-3 py-2.5 text-xs font-semibold text-white transition hover:bg-teal-800 sm:py-2"
         >
           <Camera size={15} />
           Take photo
@@ -622,8 +773,15 @@ const buildClaimPayload = (
 ) => {
   const incidentDay = formatIncidentDay(claim.incident.date);
 
+  const checklist = { ...claim.checklist };
+  if (driverLicenseFrontAttachments.length > 0 || driverLicenseBackAttachments.length > 0) {
+    checklist.license = true;
+  }
+  if (taxiAuthorityAttachments.length > 0) checklist.taxiAuthority = true;
+  if (registrationAttachments.length > 0) checklist.registration = true;
+
   return {
-    checklist: claim.checklist,
+    checklist,
     driverLicenseFrontAttachments: mapChecklistFileMeta(driverLicenseFrontAttachments),
     driverLicenseBackAttachments: mapChecklistFileMeta(driverLicenseBackAttachments),
     taxiAuthorityAttachments: mapChecklistFileMeta(taxiAuthorityAttachments),
@@ -858,6 +1016,60 @@ const createInitialClaim = () => ({
   },
 });
 
+const CLAIM_DRAFT_KEY = 'horizon-user-claim-draft-v1';
+
+const hydrateClaimFromDraft = (draftClaim) => {
+  const base = createInitialClaim();
+  if (!draftClaim || typeof draftClaim !== 'object') return base;
+  return {
+    ...base,
+    ...draftClaim,
+    checklist: { ...base.checklist, ...(draftClaim.checklist || {}) },
+    memberVehicle: { ...base.memberVehicle, ...(draftClaim.memberVehicle || {}) },
+    driver: { ...base.driver, ...(draftClaim.driver || {}) },
+    incident: { ...base.incident, ...(draftClaim.incident || {}) },
+    accidentSketch: {
+      ...base.accidentSketch,
+      ...(draftClaim.accidentSketch || {}),
+      sketchModel: draftClaim.accidentSketch?.sketchModel ?? base.accidentSketch.sketchModel,
+    },
+    damage: { ...base.damage, ...(draftClaim.damage || {}) },
+    witnessDetails: { ...base.witnessDetails, ...(draftClaim.witnessDetails || {}) },
+    declaration: { ...base.declaration, ...(draftClaim.declaration || {}) },
+    otherParties: Array.isArray(draftClaim.otherParties) ? draftClaim.otherParties : base.otherParties,
+    excessPaymentApplicability: draftClaim.excessPaymentApplicability ?? base.excessPaymentApplicability,
+    excessPaymentAmount: draftClaim.excessPaymentAmount ?? base.excessPaymentAmount,
+    repairQuoteRef: draftClaim.repairQuoteRef ?? base.repairQuoteRef,
+  };
+};
+
+const loadClaimDraft = () => {
+  try {
+    const raw = localStorage.getItem(CLAIM_DRAFT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+
+const saveClaimDraft = (payload) => {
+  try {
+    localStorage.setItem(CLAIM_DRAFT_KEY, JSON.stringify(payload));
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const clearClaimDraft = () => {
+  try {
+    localStorage.removeItem(CLAIM_DRAFT_KEY);
+  } catch {
+    /* ignore */
+  }
+};
+
 function ChecklistEvidencePanel({
   title,
   description,
@@ -970,18 +1182,138 @@ function DamageViewDualPhotoPanel({
   );
 }
 
+function MobileStepStrip({ steps, currentStep, onStepChange }) {
+  return (
+    <div className="sticky top-0 z-20 border-b border-stone-200/90 bg-white/95 shadow-sm backdrop-blur-md xl:hidden">
+      <div className="flex items-center justify-between gap-3 px-4 py-2.5">
+        <p className="text-xs font-semibold text-slate-900">
+          Step {currentStep + 1} of {steps.length}
+        </p>
+        <p className="truncate text-xs text-slate-500">{steps[currentStep]?.title}</p>
+      </div>
+      <div className="flex gap-2 overflow-x-auto px-4 pb-3 scrollbar-none">
+        {steps.map((step, index) => {
+          const active = index === currentStep;
+          const done = index < currentStep;
+          return (
+            <button
+              key={step.id}
+              type="button"
+              onClick={() => onStepChange(index)}
+              aria-current={active ? 'step' : undefined}
+              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-left transition touch-target ${
+                active
+                  ? 'border-teal-800 bg-teal-800 text-white shadow-sm'
+                  : done
+                    ? 'border-teal-200 bg-teal-50 text-teal-900'
+                    : 'border-stone-200 bg-white text-slate-600'
+              }`}
+            >
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                  active ? 'bg-white/15 text-white' : done ? 'bg-teal-700 text-white' : 'bg-stone-100 text-slate-600'
+                }`}
+              >
+                {done ? <Check size={14} /> : index + 1}
+              </span>
+              <span className="text-xs font-semibold">{step.shortTitle}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="h-1 bg-stone-100">
+        <div
+          className="h-full bg-teal-700 transition-all duration-300 ease-out"
+          style={{ width: `${((currentStep + 1) / steps.length) * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+function WizardFooterNav({ currentStep, totalSteps, onPrevious, onNext, onPreview, onSubmit }) {
+  const isFirst = currentStep === 0;
+  const isLast = currentStep === totalSteps - 1;
+
+  return (
+    <div className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200/90 bg-white/95 shadow-nav backdrop-blur-md xl:relative xl:bottom-auto xl:z-auto xl:mt-5 xl:rounded-2xl xl:border xl:shadow-card">
+      <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] sm:flex-row sm:items-center sm:justify-between xl:px-5 xl:py-4 xl:pb-4">
+        <div className="hidden min-w-0 sm:block xl:flex-1">
+          <p className="text-sm font-semibold text-slate-900">
+            {isLast ? 'Ready to submit?' : 'Continue when this section looks correct'}
+          </p>
+          <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+            {isLast
+              ? 'Preview your answers, then submit when you are happy.'
+              : 'Your progress is saved automatically on this device.'}
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:justify-end sm:gap-3">
+          <button
+            type="button"
+            onClick={onPrevious}
+            disabled={isFirst}
+            className="touch-target inline-flex items-center justify-center gap-2 rounded-xl border border-stone-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ArrowLeft size={16} aria-hidden />
+            Back
+          </button>
+          {isLast ? (
+            <>
+              <button
+                type="button"
+                onClick={onPreview}
+                className="touch-target inline-flex items-center justify-center gap-2 rounded-xl border border-stone-300 bg-white px-3 text-sm font-semibold text-slate-700 transition hover:bg-stone-50 sm:px-4"
+              >
+                <FileCheck2 size={16} aria-hidden />
+                Preview
+              </button>
+              <button
+                type="button"
+                onClick={onSubmit}
+                className="col-span-2 touch-target inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 sm:col-span-1"
+              >
+                <FileCheck2 size={16} aria-hidden />
+                Submit claim
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onNext}
+              className="touch-target inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800"
+            >
+              Continue
+              <ArrowRight size={16} aria-hidden />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [claim, setClaim] = useState(createInitialClaim);
-  const [driverLicenseFrontAttachments, setDriverLicenseFrontAttachments] = useState([]);
-  const [driverLicenseBackAttachments, setDriverLicenseBackAttachments] = useState([]);
-  const [taxiAuthorityAttachments, setTaxiAuthorityAttachments] = useState([]);
-  const [registrationAttachments, setRegistrationAttachments] = useState([]);
+  const initialDraft = useMemo(() => loadClaimDraft(), []);
+  const [currentStep, setCurrentStep] = useState(() => initialDraft?.currentStep ?? 0);
+  const [claim, setClaim] = useState(() => hydrateClaimFromDraft(initialDraft?.claim));
+  const [driverLicenseFrontAttachments, setDriverLicenseFrontAttachments] = useState(
+    () => initialDraft?.driverLicenseFrontAttachments ?? [],
+  );
+  const [driverLicenseBackAttachments, setDriverLicenseBackAttachments] = useState(
+    () => initialDraft?.driverLicenseBackAttachments ?? [],
+  );
+  const [taxiAuthorityAttachments, setTaxiAuthorityAttachments] = useState(
+    () => initialDraft?.taxiAuthorityAttachments ?? [],
+  );
+  const [registrationAttachments, setRegistrationAttachments] = useState(
+    () => initialDraft?.registrationAttachments ?? [],
+  );
   const taxiAuthorityUploadInputRef = useRef(null);
   const taxiAuthorityCameraInputRef = useRef(null);
   const registrationUploadInputRef = useRef(null);
   const registrationCameraInputRef = useRef(null);
-  const [signatureDataUrl, setSignatureDataUrl] = useState('');
+  const [signatureDataUrl, setSignatureDataUrl] = useState(() => initialDraft?.signatureDataUrl ?? '');
   const [notice, setNotice] = useState(null);
   const [reviewPayload, setReviewPayload] = useState(null);
   const [showReviewModal, setShowReviewModal] = useState(false);
@@ -995,6 +1327,37 @@ function App() {
   const [prefillCodeInput, setPrefillCodeInput] = useState('');
   const [prefillBusy, setPrefillBusy] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [prefillExpanded, setPrefillExpanded] = useState(false);
+  const [draftSavedAt, setDraftSavedAt] = useState(() => initialDraft?.savedAt ?? null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const ok = saveClaimDraft({
+        currentStep,
+        claim,
+        driverLicenseFrontAttachments,
+        driverLicenseBackAttachments,
+        taxiAuthorityAttachments,
+        registrationAttachments,
+        signatureDataUrl,
+        savedAt: Date.now(),
+      });
+      if (ok) setDraftSavedAt(Date.now());
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [
+    currentStep,
+    claim,
+    driverLicenseFrontAttachments,
+    driverLicenseBackAttachments,
+    taxiAuthorityAttachments,
+    registrationAttachments,
+    signatureDataUrl,
+  ]);
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [currentStep]);
 
   useEffect(() => {
     const target = parseOtherVehicleCountForSync(claim.incident.numberOfVehicles);
@@ -1087,11 +1450,26 @@ function App() {
     });
   };
 
-  const appendDriverLicenseFrontFiles = (fileList, source) =>
-    appendChecklistEvidenceFiles(setDriverLicenseFrontAttachments, fileList, source);
+  const markChecklistCollected = (key) => {
+    setClaim((current) =>
+      current.checklist[key]
+        ? current
+        : {
+            ...current,
+            checklist: { ...current.checklist, [key]: true },
+          },
+    );
+  };
 
-  const appendDriverLicenseBackFiles = (fileList, source) =>
-    appendChecklistEvidenceFiles(setDriverLicenseBackAttachments, fileList, source);
+  const appendDriverLicenseFrontFiles = (fileList, source) => {
+    markChecklistCollected('license');
+    void appendChecklistEvidenceFiles(setDriverLicenseFrontAttachments, fileList, source);
+  };
+
+  const appendDriverLicenseBackFiles = (fileList, source) => {
+    markChecklistCollected('license');
+    void appendChecklistEvidenceFiles(setDriverLicenseBackAttachments, fileList, source);
+  };
 
   const removeDriverLicenseFrontAttachment = (id) => {
     setDriverLicenseFrontAttachments((prev) => prev.filter((item) => item.id !== id));
@@ -1101,15 +1479,19 @@ function App() {
     setDriverLicenseBackAttachments((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const appendTaxiAuthorityFiles = (fileList, source) =>
-    appendChecklistEvidenceFiles(setTaxiAuthorityAttachments, fileList, source);
+  const appendTaxiAuthorityFiles = (fileList, source) => {
+    markChecklistCollected('taxiAuthority');
+    void appendChecklistEvidenceFiles(setTaxiAuthorityAttachments, fileList, source);
+  };
 
   const removeTaxiAuthorityAttachment = (id) => {
     setTaxiAuthorityAttachments((prev) => prev.filter((item) => item.id !== id));
   };
 
-  const appendRegistrationFiles = (fileList, source) =>
-    appendChecklistEvidenceFiles(setRegistrationAttachments, fileList, source);
+  const appendRegistrationFiles = (fileList, source) => {
+    markChecklistCollected('registration');
+    void appendChecklistEvidenceFiles(setRegistrationAttachments, fileList, source);
+  };
 
   const removeRegistrationAttachment = (id) => {
     setRegistrationAttachments((prev) => prev.filter((item) => item.id !== id));
@@ -1320,6 +1702,8 @@ function App() {
     setCurrentStep(0);
     setReviewPayload(null);
     setPrefillCodeInput('');
+    clearClaimDraft();
+    setDraftSavedAt(null);
   };
 
   const resetWizardForm = () => setShowResetConfirm(true);
@@ -1449,8 +1833,9 @@ function App() {
   };
 
   const finalizeSubmission = () => {
-    if (!reviewPayload) return;
-    runSubmission(reviewPayload);
+    const payload = prepareSubmission();
+    if (!payload) return;
+    runSubmission(payload);
   };
 
   const renderStepContent = () => {
@@ -1637,30 +2022,89 @@ function App() {
         );
       case 'member':
         return (
-          <div className="space-y-6">
-            <SectionIntro title="Member and vehicle details" description="Capture the member profile, vehicle identity, and owner contact details." />
-            <div className="grid gap-6 xl:grid-cols-2">
-              <Card title="Policy reference">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Member Number" value={claim.memberVehicle.memberNumber} onChange={(value) => updateSection('memberVehicle', 'memberNumber', value)} />
-                  <SelectField label="Claim Type" value={claim.memberVehicle.claimType} options={['Claim', 'Report Only']} onChange={(value) => updateSection('memberVehicle', 'claimType', value)} />
-                </div>
-              </Card>
-              <Card title="Vehicle details">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Vehicle Plate No." value={claim.memberVehicle.plateNumber} onChange={(value) => updateSection('memberVehicle', 'plateNumber', value)} />
-                  <Field label="Kilometer's" value={claim.memberVehicle.kilometers} onChange={(value) => updateSection('memberVehicle', 'kilometers', value)} />
-                  <Field label="Make" value={claim.memberVehicle.make} onChange={(value) => updateSection('memberVehicle', 'make', value)} />
-                  <Field label="Model" value={claim.memberVehicle.model} onChange={(value) => updateSection('memberVehicle', 'model', value)} />
-                  <Field label="Month & Year" value={claim.memberVehicle.monthYear} onChange={(value) => updateSection('memberVehicle', 'monthYear', value)} />
-                </div>
-              </Card>
-            </div>
-            <Card title="Registered owner contact">
-              <div className="grid gap-4 lg:grid-cols-2">
-                <Field label="Registered Owner's Name" value={claim.memberVehicle.ownerName} onChange={(value) => updateSection('memberVehicle', 'ownerName', value)} />
-                <Field label="Address" value={claim.memberVehicle.address} onChange={(value) => updateSection('memberVehicle', 'address', value)} />
-                <Field label="Mobile" value={claim.memberVehicle.mobile} onChange={(value) => updateSection('memberVehicle', 'mobile', value)} />
+          <div className="space-y-5">
+            <Card title="Vehicle & membership" subtitle="Details about your vehicle and how you are claiming.">
+              <div className="space-y-8">
+                <FormSection title="Membership" description="Only fill this in if you have a member number.">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field
+                      label="Member number"
+                      optional
+                      placeholder="Leave blank if not applicable"
+                      value={claim.memberVehicle.memberNumber}
+                      onChange={(value) => updateSection('memberVehicle', 'memberNumber', value)}
+                    />
+                    <SelectField
+                      label="Claim type"
+                      value={claim.memberVehicle.claimType}
+                      options={['Claim', 'Report Only']}
+                      onChange={(value) => updateSection('memberVehicle', 'claimType', value)}
+                    />
+                  </div>
+                </FormSection>
+                <FormSection
+                  title="Vehicle registration"
+                  description="Match what appears on your rego papers."
+                  className="border-t border-stone-100 pt-8"
+                >
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field
+                      label="Plate number"
+                      placeholder="e.g. ABC123"
+                      value={claim.memberVehicle.plateNumber}
+                      onChange={(value) => updateSection('memberVehicle', 'plateNumber', value)}
+                    />
+                    <Field
+                      label="Odometer (km)"
+                      placeholder="e.g. 85000"
+                      inputMode="numeric"
+                      value={claim.memberVehicle.kilometers}
+                      onChange={(value) => updateSection('memberVehicle', 'kilometers', value)}
+                    />
+                    <Field
+                      label="Make"
+                      placeholder="e.g. Toyota"
+                      value={claim.memberVehicle.make}
+                      onChange={(value) => updateSection('memberVehicle', 'make', value)}
+                    />
+                    <Field
+                      label="Model"
+                      placeholder="e.g. Camry"
+                      value={claim.memberVehicle.model}
+                      onChange={(value) => updateSection('memberVehicle', 'model', value)}
+                    />
+                    <Field
+                      label="Month & year"
+                      placeholder="e.g. March 2019"
+                      className="sm:col-span-2"
+                      value={claim.memberVehicle.monthYear}
+                      onChange={(value) => updateSection('memberVehicle', 'monthYear', value)}
+                    />
+                  </div>
+                </FormSection>
+              </div>
+            </Card>
+            <Card title="Owner contact" subtitle="How we can reach the registered owner.">
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field
+                  label="Owner's name"
+                  autoComplete="name"
+                  value={claim.memberVehicle.ownerName}
+                  onChange={(value) => updateSection('memberVehicle', 'ownerName', value)}
+                />
+                <Field
+                  label="Address"
+                  autoComplete="street-address"
+                  value={claim.memberVehicle.address}
+                  onChange={(value) => updateSection('memberVehicle', 'address', value)}
+                />
+                <Field
+                  label="Mobile"
+                  autoComplete="tel"
+                  inputMode="tel"
+                  value={claim.memberVehicle.mobile}
+                  onChange={(value) => updateSection('memberVehicle', 'mobile', value)}
+                />
                 <Field
                   type="email"
                   label="Email"
@@ -1872,81 +2316,63 @@ function App() {
         return (
           <div className="space-y-6">
             <SectionIntro
-              title="Sketch diagram of accident"
-              description="Draw a simple map of the scene: street names, travel directions, your vehicle, and other vehicles involved."
+              title="Accident sketch"
+              description="Draw a simple bird's-eye map of the scene — streets, travel directions, and where each vehicle was."
             />
-            <div className="overflow-hidden rounded-lg border-2 border-slate-800 bg-white shadow-md">
-              <div className="border-b border-slate-300 bg-slate-200 px-4 py-3">
-                <h3 className="text-center text-sm font-bold uppercase tracking-[0.12em] text-slate-900">Sketch diagram of accident</h3>
-              </div>
-              <div className="flex min-h-[320px] flex-col lg:min-h-[380px] lg:flex-row">
-                <div className="border-b border-slate-300 bg-slate-50 p-4 text-sm text-slate-800 lg:w-[32%] lg:border-b-0 lg:border-r lg:border-slate-300">
-                  <p className="font-semibold text-slate-900">Include on your sketch:</p>
-                  <ol className="mt-3 list-decimal space-y-3 pl-4 marker:font-medium">
-                    <li>Name streets</li>
-                    <li>Indicate direction of travel (arrows)</li>
-                    <li className="pl-0">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span>Your vehicle</span>
-                        <span
-                          className="inline-flex items-center justify-center overflow-hidden rounded-lg border-2 border-teal-700 bg-white px-1 py-0.5 shadow-sm ring-1 ring-teal-600/25"
-                          aria-hidden
-                          title="Your vehicle stamp on the map"
-                        >
-                          <img
-                            src={SKETCH_CAR_SELF_IMAGE_SRC}
-                            alt=""
-                            className="h-7 w-14 object-cover"
-                          />
-                        </span>
-                      </span>
-                    </li>
-                    <li className="pl-0">
-                      <span className="flex flex-wrap items-center gap-2">
-                        <span>Other vehicle</span>
-                        <span
-                          className="inline-flex items-center justify-center overflow-hidden rounded-lg border-2 border-slate-500 bg-white px-1 py-0.5 shadow-sm"
-                          aria-hidden
-                          title="Other vehicle stamp on the map"
-                        >
-                          <img
-                            src={SKETCH_CAR_OTHER_IMAGE_SRC}
-                            alt=""
-                            className="h-7 w-14 scale-x-[-1] object-cover"
-                          />
-                        </span>
-                      </span>
-                    </li>
-                  </ol>
-                  <p className="mt-4 text-xs leading-relaxed text-slate-600">
-                    Draw with your finger or mouse, use the toolbar to place vehicle symbols or street labels, then use{' '}
-                    <span className="font-semibold text-slate-800">Clear</span> to start over.
-                  </p>
-                </div>
-                <div className="flex flex-1 flex-col bg-white p-3 lg:w-[68%]">
-                  <AccidentSketchCanvas
-                    sketchModel={claim.accidentSketch.sketchModel}
-                    onChange={(update) =>
-                      setClaim((c) => ({
-                        ...c,
-                        accidentSketch: {
-                          ...c.accidentSketch,
-                          diagramDataUrl: update.diagramDataUrl,
-                          sketchModel: update.sketchModel,
-                        },
-                      }))
-                    }
-                  />
-                  <EvidenceUploadPanel
-                    title="Or upload a photo or scan"
-                    description="If your sketch is on paper, photograph or scan it and attach here (images or PDF). You can use the canvas above, uploads, or both."
-                    className="mt-4 rounded-lg border border-slate-200 bg-slate-50/90 px-3 py-3"
-                    attachments={claim.accidentSketch.attachments ?? []}
-                    onAppendFiles={appendAccidentSketchFiles}
-                    onRemoveFile={removeAccidentSketchAttachment}
-                  />
-                </div>
-              </div>
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]">
+              <Card title="Sketch canvas" subtitle="Draw roads and arrows, then place vehicle symbols from the toolbar.">
+                <AccidentSketchCanvas
+                  sketchModel={claim.accidentSketch.sketchModel}
+                  onChange={(update) =>
+                    setClaim((c) => ({
+                      ...c,
+                      accidentSketch: {
+                        ...c.accidentSketch,
+                        diagramDataUrl: update.diagramDataUrl,
+                        sketchModel: update.sketchModel,
+                      },
+                    }))
+                  }
+                />
+                <EvidenceUploadPanel
+                  title="Or upload a photo or scan"
+                  description="If your sketch is on paper, photograph or scan it and attach here. You can use the canvas above, uploads, or both."
+                  className="mt-4 rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-4"
+                  attachments={claim.accidentSketch.attachments ?? []}
+                  onAppendFiles={appendAccidentSketchFiles}
+                  onRemoveFile={removeAccidentSketchAttachment}
+                />
+              </Card>
+              <Card title="What to include" subtitle="A clear sketch helps us understand the incident faster.">
+                <ol className="space-y-4 text-sm text-slate-700">
+                  <li className="flex gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-800">1</span>
+                    <span>Name streets and any landmarks (e.g. intersection, roundabout).</span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-800">2</span>
+                    <span>Show direction of travel with arrows on each lane.</span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-800">3</span>
+                    <span className="flex flex-col gap-2">
+                      Place your vehicle on the map
+                      <SketchCarPreview role="self" label="Your vehicle" accent="self" />
+                    </span>
+                  </li>
+                  <li className="flex gap-3">
+                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-50 text-xs font-bold text-teal-800">4</span>
+                    <span className="flex flex-col gap-2">
+                      Place any other vehicles involved
+                      <SketchCarPreview role="other" label="Other vehicle" accent="other" />
+                    </span>
+                  </li>
+                </ol>
+                <p className="mt-5 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600">
+                  Use <span className="font-semibold text-slate-800">Select</span> to move or rotate a vehicle after placing it.
+                  Tap <span className="font-semibold text-slate-800">Clear</span> to start over.
+                </p>
+              </Card>
             </div>
           </div>
         );
@@ -2115,62 +2541,78 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#f7f6f2] text-slate-950">
-      <div className="bg-[#101c18] text-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between border-b border-white/10 px-4 py-3 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-amber-400 text-slate-950 shadow-lg shadow-amber-950/20">
-              <Shield size={20} />
+    <div className="min-h-screen min-h-[100dvh] bg-[#f7f6f2] pb-nav-safe text-slate-950 xl:pb-8">
+      <header className="bg-[#101c18] text-white">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400 text-slate-950 shadow-lg shadow-amber-950/20">
+              <Shield size={20} aria-hidden />
             </div>
-            <div>
-              <p className="text-sm font-semibold tracking-[0.02em]">Horizon Smash Repairs</p>
-              <p className="text-xs text-white/55">Accident claim lodgement</p>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold">Horizon Smash Repairs</p>
+              <p className="truncate text-xs text-white/60">Accident claim portal</p>
             </div>
           </div>
-          <div className="hidden items-center gap-2 sm:flex">
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">Secure draft</span>
-            <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-3 py-1 text-xs font-semibold text-amber-100">6-step claim flow</span>
+          <div className="flex shrink-0 items-center gap-2">
+            {draftSavedAt ? (
+              <span className="hidden rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-medium text-white/75 sm:inline">
+                Saved on this device
+              </span>
+            ) : null}
+            <span className="rounded-full border border-amber-300/30 bg-amber-300/10 px-2.5 py-1 text-[11px] font-semibold text-amber-100 sm:px-3 sm:text-xs">
+              {wizardSteps.length} steps
+            </span>
           </div>
         </div>
-        <div className="mx-auto flex max-w-7xl flex-col gap-8 px-4 pb-16 pt-9 sm:px-6 lg:flex-row lg:items-end lg:justify-between lg:px-8">
-          <div className="max-w-3xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-amber-200">
-              Secure Claim Intake
-            </p>
-            <h1 className="mt-4 max-w-3xl text-4xl font-semibold tracking-tight text-white sm:text-5xl">
-              Accident claim portal
-            </h1>
-            <p className="mt-4 max-w-2xl text-base leading-7 text-white/70">
-              Lodge claims through a polished guided workflow with driver details, incident context, damage mapping, and signature capture.
-            </p>
-          </div>
-          <div className="grid w-full grid-cols-3 gap-2 rounded-2xl border border-white/10 bg-white/[0.07] p-2 shadow-2xl shadow-black/20 backdrop-blur lg:max-w-[520px]">
-            {completionCards.map((item) => (
-              <div key={item.label} className="min-w-0 rounded-xl border border-white/10 bg-white/[0.08] px-4 py-3">
-                <p className="truncate text-[10px] font-semibold uppercase tracking-[0.14em] text-white/45">{item.label}</p>
-                <p className="mt-2 text-2xl font-semibold text-white">{item.value}</p>
-              </div>
-            ))}
+
+        <div className="hidden border-t border-white/10 md:block">
+          <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-8 sm:px-6 lg:flex-row lg:items-end lg:justify-between lg:px-8">
+            <div className="max-w-2xl">
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-amber-200">Report your accident</p>
+              <h1 className="mt-3 text-3xl font-semibold tracking-tight text-white lg:text-4xl">
+                Lodge your claim step by step
+              </h1>
+              <p className="mt-3 text-sm leading-relaxed text-white/70 lg:text-base">
+                Work through each section at your own pace. Your answers are saved automatically on this phone or
+                computer so you can pause and come back later.
+              </p>
+            </div>
+            <div className="grid w-full grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-white/[0.06] p-2 sm:grid-cols-3 lg:max-w-md">
+              {completionCards.slice(0, 3).map((item) => (
+                <div key={item.label} className="rounded-xl border border-white/10 bg-white/[0.08] px-3 py-2.5">
+                  <p className="truncate text-[10px] font-semibold uppercase tracking-wide text-white/45">{item.label}</p>
+                  <p className="mt-1 text-lg font-semibold text-white">{item.value}</p>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="mx-auto -mt-10 max-w-7xl px-4 pb-8 sm:px-6 lg:px-8">
+      <MobileStepStrip steps={wizardSteps} currentStep={currentStep} onStepChange={setCurrentStep} />
 
+      <div className="mx-auto max-w-7xl px-4 pt-4 sm:px-6 lg:px-8">
         {notice && (
-          <div className={`mb-5 rounded-lg px-5 py-4 shadow-sm ${
-            notice.type === 'success'
-              ? 'border border-emerald-200 bg-emerald-50'
-              : 'border border-rose-200 bg-rose-50'
-          }`}>
-            <p className={`text-sm font-semibold uppercase tracking-[0.16em] ${
-              notice.type === 'success' ? 'text-emerald-700' : 'text-rose-700'
-            }`}>
-              {notice.type === 'success' ? 'Submission complete' : 'Action required'}
+          <div
+            className={`mb-4 rounded-xl px-4 py-3.5 shadow-sm sm:px-5 sm:py-4 ${
+              notice.type === 'success'
+                ? 'border border-emerald-200 bg-emerald-50'
+                : 'border border-rose-200 bg-rose-50'
+            }`}
+            role="status"
+          >
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide ${
+                notice.type === 'success' ? 'text-emerald-700' : 'text-rose-700'
+              }`}
+            >
+              {notice.type === 'success' ? 'Done' : 'Please check'}
             </p>
-            <p className={`mt-2 text-sm font-medium ${
-              notice.type === 'success' ? 'text-emerald-900' : 'text-rose-900'
-            }`}>
+            <p
+              className={`mt-1.5 text-sm font-medium ${
+                notice.type === 'success' ? 'text-emerald-900' : 'text-rose-900'
+              }`}
+            >
               {notice.message}
             </p>
           </div>
@@ -2216,156 +2658,168 @@ function App() {
           />
         )}
 
-        <main className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,260px)_1fr] xl:gap-6">
-          <div className="overflow-hidden rounded-2xl border border-stone-200/90 bg-white shadow-[0_8px_30px_-18px_rgba(15,23,42,0.35)] ring-1 ring-stone-100 xl:col-span-2">
-            <div className="border-b border-teal-800/10 bg-gradient-to-r from-teal-50/90 to-white px-4 py-3 sm:px-6 sm:py-3.5">
+        <main className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,248px)_1fr] xl:gap-6">
+          <div className="overflow-hidden rounded-2xl border border-stone-200/90 bg-white shadow-card xl:col-span-2">
+            <button
+              type="button"
+              onClick={() => setPrefillExpanded((open) => !open)}
+              className="flex w-full items-center justify-between gap-3 border-b border-teal-800/10 bg-gradient-to-r from-teal-50/90 to-white px-4 py-3.5 text-left sm:px-5"
+              aria-expanded={prefillExpanded}
+            >
               <div>
-                <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-teal-800">Returning member</p>
-                <p className="mt-0.5 text-sm font-semibold text-slate-900">Pre-fill from a previous claim</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-teal-800">Returning member?</p>
+                <p className="mt-0.5 text-sm font-semibold text-slate-900">Pre-fill from a previous claim reference</p>
               </div>
-            </div>
-            <div className="px-4 py-4 sm:px-6 sm:py-5">
-              <p className="max-w-3xl text-sm leading-relaxed text-slate-600">
-                Submitted a claim before? Enter the <span className="font-semibold text-slate-800">claim reference</span> from your submission confirmation (format HR-####-####). We will fill in your member, driver, and licence contact details for this <span className="font-semibold text-slate-800">new</span> claim — not your previous incident, sketch, or uploads.
-              </p>
-              <p className="mt-2 text-xs leading-relaxed text-slate-500">
-                Your reference code is created when you submit. Save it from the confirmation screen if you may claim again later.
-              </p>
-              <p className="mt-2 text-xs text-slate-600">
-                <button
-                  type="button"
-                  onClick={resetWizardForm}
-                  className="font-semibold text-teal-800 underline decoration-teal-300 underline-offset-2 transition hover:text-teal-950"
-                >
-                  Start a new claim
-                </button>
-                <span className="text-slate-500"> — clears the form without using a reference code.</span>
-              </p>
-              <div className="mt-5 flex flex-col gap-3 rounded-xl border border-stone-200 bg-stone-50/80 p-3 sm:flex-row sm:items-center sm:gap-4 sm:p-4">
-                <label htmlFor="prefill-claim-code" className="sr-only">
-                  Enter your claim reference from a previous submission
-                </label>
-                <input
-                  id="prefill-claim-code"
-                  type="text"
-                  autoComplete="off"
-                  spellCheck={false}
-                  disabled={prefillBusy}
-                  placeholder="Enter code (e.g. HR-A1B2-C3D4)"
-                  value={prefillCodeInput}
-                  onChange={(e) => setPrefillCodeInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      applyPrefillFromReference();
-                    }
-                  }}
-                  className="min-h-[44px] w-full min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20 disabled:cursor-not-allowed disabled:opacity-60"
-                />
-                <button
-                  type="button"
-                  onClick={applyPrefillFromReference}
-                  disabled={prefillBusy}
-                  className="inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-60 sm:px-6"
-                >
-                  {prefillBusy ? (
-                    <>
-                      <LoaderCircle size={16} className="animate-spin" aria-hidden />
-                      Loading…
-                    </>
-                  ) : (
-                    'Pre-fill details'
-                  )}
-                </button>
+              <ChevronDown
+                size={20}
+                className={`shrink-0 text-slate-500 transition ${prefillExpanded ? 'rotate-180' : ''}`}
+                aria-hidden
+              />
+            </button>
+            {prefillExpanded && (
+              <div className="px-4 py-4 sm:px-5 sm:py-5">
+                <p className="text-sm leading-relaxed text-slate-600">
+                  Enter the <span className="font-semibold text-slate-800">HR-####-####</span> code from your last
+                  submission. We will fill in your contact and licence details for this new claim only.
+                </p>
+                <p className="mt-3 text-xs text-slate-500">
+                  <button
+                    type="button"
+                    onClick={resetWizardForm}
+                    className="font-semibold text-teal-800 underline decoration-teal-300 underline-offset-2"
+                  >
+                    Start a fresh claim
+                  </button>{' '}
+                  without a reference code.
+                </p>
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+                  <label htmlFor="prefill-claim-code" className="sr-only">
+                    Claim reference from previous submission
+                  </label>
+                  <input
+                    id="prefill-claim-code"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    disabled={prefillBusy}
+                    placeholder="e.g. HR-A1B2-C3D4"
+                    value={prefillCodeInput}
+                    onChange={(e) => setPrefillCodeInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        applyPrefillFromReference();
+                      }
+                    }}
+                    className="touch-target min-h-[44px] w-full min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/20 disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={applyPrefillFromReference}
+                    disabled={prefillBusy}
+                    className="touch-target inline-flex min-h-[44px] shrink-0 items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 text-sm font-semibold text-white transition hover:bg-teal-800 disabled:opacity-60"
+                  >
+                    {prefillBusy ? (
+                      <>
+                        <LoaderCircle size={16} className="animate-spin" aria-hidden />
+                        Loading…
+                      </>
+                    ) : (
+                      'Pre-fill details'
+                    )}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
-          <aside className="h-fit rounded-2xl border border-stone-200 bg-white p-4 shadow-[0_24px_80px_-55px_rgba(15,23,42,0.75)] xl:sticky xl:top-6">
-            <div className="mb-5">
-              <p className="mb-3 text-sm font-semibold text-slate-950">Claim progress</p>
-              <div className="flex items-center justify-between">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Completion</p>
-                <p className="text-sm font-semibold text-teal-800">{stepCompletion}%</p>
+          <aside className="hidden h-fit rounded-2xl border border-stone-200 bg-white p-4 shadow-card xl:sticky xl:top-6 xl:block">
+            <div className="mb-4">
+              <p className="text-sm font-semibold text-slate-950">Your progress</p>
+              <div className="mt-3 flex items-center justify-between text-xs">
+                <span className="font-medium text-slate-500">Step {currentStep + 1} of {wizardSteps.length}</span>
+                <span className="font-semibold text-teal-800">{stepCompletion}%</span>
               </div>
-              <div className="mt-3 h-2 overflow-hidden rounded-full bg-stone-100">
-                <div className="h-full rounded-full bg-teal-700" style={{ width: `${stepCompletion}%` }} />
+              <div className="mt-2 h-2 overflow-hidden rounded-full bg-stone-100">
+                <div className="h-full rounded-full bg-teal-700 transition-all duration-300" style={{ width: `${stepCompletion}%` }} />
               </div>
             </div>
-            <div className="space-y-2">
+            <nav className="space-y-1.5" aria-label="Claim steps">
               {wizardSteps.map((step, index) => {
                 const Icon = step.icon;
                 const active = index === currentStep;
                 const done = index < currentStep;
                 return (
-                  <button key={step.id} type="button" onClick={() => setCurrentStep(index)} className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition ${active ? 'bg-[#101c18] text-white shadow-lg shadow-slate-950/10' : done ? 'bg-teal-50 text-teal-900 ring-1 ring-inset ring-teal-100' : 'bg-white text-slate-700 hover:bg-stone-50'}`}>
-                    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${active ? 'border-white/10 bg-white/10' : done ? 'border-teal-700 bg-teal-700 text-white' : 'border-stone-200 bg-stone-50 text-slate-600'}`}>
-                      {done ? <CheckCircle2 size={18} /> : <Icon size={18} />}
+                  <button
+                    key={step.id}
+                    type="button"
+                    onClick={() => setCurrentStep(index)}
+                    aria-current={active ? 'step' : undefined}
+                    className={`flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition ${
+                      active
+                        ? 'bg-[#101c18] text-white shadow-sm'
+                        : done
+                          ? 'bg-teal-50 text-teal-900 ring-1 ring-inset ring-teal-100'
+                          : 'text-slate-700 hover:bg-stone-50'
+                    }`}
+                  >
+                    <span
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-xs font-bold ${
+                        active
+                          ? 'border-white/10 bg-white/10'
+                          : done
+                            ? 'border-teal-700 bg-teal-700 text-white'
+                            : 'border-stone-200 bg-stone-50 text-slate-600'
+                      }`}
+                    >
+                      {done ? <CheckCircle2 size={16} /> : <Icon size={16} />}
                     </span>
-                    <div>
-                      <p className="text-sm font-semibold">{step.title}</p>
-                      <p className={`text-xs ${active ? 'text-slate-300' : 'text-slate-500'}`}>Step {index + 1}</p>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">{step.shortTitle}</p>
+                      <p className={`truncate text-xs ${active ? 'text-white/60' : 'text-slate-500'}`}>{step.title}</p>
                     </div>
                   </button>
                 );
               })}
-            </div>
-
+            </nav>
           </aside>
 
-          <section className="space-y-5">
-            <div className="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-[0_24px_80px_-55px_rgba(15,23,42,0.75)]">
-              <div className="h-1 bg-gradient-to-r from-amber-400 via-teal-600 to-[#101c18]" />
-              <div className="p-5 sm:p-6">
-              <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-800">Step {currentStep + 1} of {wizardSteps.length}</p>
-                  <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{wizardSteps[currentStep].title}</h2>
-                  <p className="mt-2 text-sm leading-6 text-slate-600">Complete this section and continue when the details are ready.</p>
-                </div>
-                <div className="rounded-xl border border-stone-200 bg-stone-50 px-4 py-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Current section</p>
-                  <p className="mt-1 text-sm font-semibold text-slate-950">{wizardSteps[currentStep].title}</p>
-                </div>
+          <section className="min-w-0 space-y-4 pb-2">
+            <div className="overflow-hidden rounded-2xl border border-stone-200/80 bg-white shadow-card xl:hidden">
+              <div className="border-b border-stone-100 bg-stone-50/40 px-4 py-3.5">
+                <h2 className="text-lg font-semibold text-slate-900">{wizardSteps[currentStep].title}</h2>
+                <p className="mt-1 text-sm text-slate-600">{wizardSteps[currentStep].description}</p>
               </div>
+              <div className="flex gap-2.5 px-4 py-3">
+                <HelpCircle size={16} className="mt-0.5 shrink-0 text-teal-600" aria-hidden />
+                <p className="text-sm text-slate-600">{wizardSteps[currentStep].tip}</p>
+              </div>
+            </div>
+
+            <div className="hidden overflow-hidden rounded-2xl border border-stone-200/80 bg-white shadow-card xl:block">
+              <div className="border-b border-stone-100 bg-stone-50/40 px-5 py-4 sm:px-6">
+                <p className="text-xs font-medium uppercase tracking-wide text-teal-700">
+                  Step {currentStep + 1} of {wizardSteps.length}
+                </p>
+                <h2 className="mt-1 text-xl font-semibold text-slate-900">{wizardSteps[currentStep].title}</h2>
+                <p className="mt-1.5 text-sm leading-relaxed text-slate-600">{wizardSteps[currentStep].description}</p>
+              </div>
+              <div className="flex gap-2.5 px-5 py-3 sm:px-6">
+                <HelpCircle size={16} className="mt-0.5 shrink-0 text-teal-600" aria-hidden />
+                <p className="text-sm text-slate-600">{wizardSteps[currentStep].tip}</p>
               </div>
             </div>
 
             <div>{renderStepContent()}</div>
 
-            <div className="sticky bottom-4 z-20 rounded-2xl border border-stone-200 bg-white/95 p-4 shadow-[0_24px_70px_-42px_rgba(15,23,42,0.65)] backdrop-blur">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-slate-900">Ready to continue?</p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">
-                    Move step by step, then submit once the declaration and signature are complete.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                  <button type="button" onClick={() => setCurrentStep((step) => Math.max(step - 1, 0))} disabled={currentStep === 0} className="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-stone-50 disabled:cursor-not-allowed disabled:opacity-40">
-                    <ArrowLeft size={16} />
-                    Previous
-                  </button>
-                  {currentStep < wizardSteps.length - 1 ? (
-                    <button type="button" onClick={() => setCurrentStep((step) => Math.min(step + 1, wizardSteps.length - 1))} disabled={currentStep === wizardSteps.length - 1} className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300">
-                      Next
-                      <ArrowRight size={16} />
-                    </button>
-                  ) : (
-                    <>
-                      <button type="button" onClick={openReview} className="inline-flex items-center gap-2 rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-stone-50">
-                        <FileCheck2 size={16} />
-                        Preview
-                      </button>
-                      <button type="button" onClick={submitClaim} className="inline-flex items-center justify-center gap-2 rounded-xl bg-teal-700 px-5 py-3 text-sm font-semibold text-white transition hover:bg-teal-800">
-                        <FileCheck2 size={16} />
-                        Submit claim
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            </div>
+            <WizardFooterNav
+              currentStep={currentStep}
+              totalSteps={wizardSteps.length}
+              onPrevious={() => setCurrentStep((step) => Math.max(step - 1, 0))}
+              onNext={() => setCurrentStep((step) => Math.min(step + 1, wizardSteps.length - 1))}
+              onPreview={openReview}
+              onSubmit={submitClaim}
+            />
           </section>
         </main>
       </div>
@@ -2375,82 +2829,135 @@ function App() {
 
 function SectionIntro({ title, description }) {
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white px-5 py-4 shadow-[0_18px_55px_-48px_rgba(15,23,42,0.65)]">
-      <h3 className="text-xl font-semibold tracking-tight text-slate-950">{title}</h3>
-      <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{description}</p>
+    <div className="rounded-xl border border-stone-200/80 bg-stone-50/50 px-4 py-3.5">
+      <h3 className="text-base font-semibold text-slate-900">{title}</h3>
+      <p className="mt-1 text-sm leading-relaxed text-slate-600">{description}</p>
     </div>
   );
 }
 
-function Card({ title, children }) {
+function FormSection({ title, description, children, className = '' }) {
   return (
-    <div className="rounded-2xl border border-stone-200 bg-white p-5 shadow-[0_18px_55px_-50px_rgba(15,23,42,0.72)]">
-      <div className="mb-5 flex items-center gap-3 border-b border-stone-100 pb-4">
-        <span className="h-2 w-2 rounded-full bg-amber-500 shadow-[0_0_0_4px_rgba(245,158,11,0.12)]" />
-        <h4 className="text-base font-semibold text-slate-950">{title}</h4>
-      </div>
+    <section className={className}>
+      {(title || description) && (
+        <div className="mb-4">
+          {title ? <h5 className="text-sm font-semibold text-slate-900">{title}</h5> : null}
+          {description ? <p className="mt-1 text-sm text-slate-500">{description}</p> : null}
+        </div>
+      )}
       {children}
+    </section>
+  );
+}
+
+function Card({ title, subtitle, children, className = '' }) {
+  return (
+    <div className={`overflow-hidden rounded-2xl border border-stone-200/80 bg-white shadow-card ${className}`}>
+      {title ? (
+        <div className="border-b border-stone-100 bg-stone-50/40 px-5 py-4 sm:px-6">
+          <h4 className="text-base font-semibold text-slate-900">{title}</h4>
+          {subtitle ? <p className="mt-1 text-sm text-slate-500">{subtitle}</p> : null}
+        </div>
+      ) : null}
+      <div className="p-5 sm:p-6">{children}</div>
+    </div>
+  );
+}
+
+function FieldLabel({ children, optional, hint }) {
+  return (
+    <div className="space-y-0.5">
+      <span className="text-sm font-medium text-slate-800">
+        {children}
+        {optional ? <span className="ml-1.5 text-xs font-normal text-slate-400">(optional)</span> : null}
+      </span>
+      {hint ? <span className="block text-xs text-slate-500">{hint}</span> : null}
     </div>
   );
 }
 
 function Label({ children }) {
-  return <span className="text-sm font-semibold text-slate-700">{children}</span>;
+  return <span className="text-sm font-medium text-slate-800">{children}</span>;
 }
 
-function Field({ label, value, onChange, type = 'text', error = '', autoComplete, inputMode, disabled = false, maxLength }) {
+const fieldInputClass =
+  'min-h-[44px] w-full rounded-lg border border-stone-200 bg-white px-3.5 py-2.5 text-sm text-slate-900 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-teal-600 focus:ring-2 focus:ring-teal-600/15 disabled:cursor-not-allowed disabled:bg-stone-50 disabled:text-slate-400';
+
+function Field({
+  label,
+  value,
+  onChange,
+  type = 'text',
+  error = '',
+  hint = '',
+  optional = false,
+  placeholder = '',
+  autoComplete,
+  inputMode,
+  disabled = false,
+  maxLength,
+  className = '',
+}) {
   return (
-    <label className="space-y-2">
-      <Label>{label}</Label>
+    <label className={`block space-y-1.5 ${className}`}>
+      <FieldLabel optional={optional} hint={hint}>
+        {label}
+      </FieldLabel>
       <input
         type={type}
         value={value}
+        placeholder={placeholder}
         onChange={(event) => onChange(event.target.value)}
         autoComplete={autoComplete}
         inputMode={inputMode}
         disabled={disabled}
         maxLength={maxLength}
         aria-invalid={error ? 'true' : 'false'}
-        className={`w-full rounded-xl px-4 py-3 text-sm text-slate-900 outline-none transition ${
+        className={`${fieldInputClass} ${
           disabled
-            ? 'cursor-not-allowed border border-stone-200 bg-stone-100 text-slate-400'
+            ? 'border-stone-200 bg-stone-50 text-slate-400'
             : error
-            ? 'border border-red-300 bg-red-50 focus:border-red-500 focus:bg-white focus:ring-4 focus:ring-red-100'
-            : 'border border-stone-300 bg-white focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-100'
+              ? 'border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-500/15'
+              : ''
         }`}
       />
-      {!disabled && error && <p className="text-sm font-medium text-red-600">{error}</p>}
+      {!disabled && error ? <p className="text-xs font-medium text-red-600">{error}</p> : null}
     </label>
   );
 }
 
 function ReadOnlyField({ label, value }) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       <Label>{label}</Label>
-      <div className="w-full rounded-xl border border-stone-200 bg-stone-50 px-4 py-3 text-sm font-medium text-slate-600">
-        {value}
-      </div>
+      <div className={`${fieldInputClass} border-stone-200 bg-stone-50 font-medium text-slate-600`}>{value}</div>
     </div>
   );
 }
 
 function TextAreaField({ label, value, onChange, rows = 4 }) {
   return (
-    <label className="space-y-2">
+    <label className="block space-y-1.5">
       <Label>{label}</Label>
-      <textarea rows={rows} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-100" />
+      <textarea
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className={`${fieldInputClass} min-h-[88px] resize-y py-3`}
+      />
     </label>
   );
 }
 
 function SelectField({ label, value, options, onChange }) {
   return (
-    <label className="space-y-2">
+    <label className="block space-y-1.5">
       <Label>{label}</Label>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-xl border border-stone-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-teal-700 focus:bg-white focus:ring-4 focus:ring-teal-100">
+      <select value={value} onChange={(event) => onChange(event.target.value)} className={fieldInputClass}>
         {options.map((option) => (
-          <option key={option} value={option}>{option}</option>
+          <option key={option} value={option}>
+            {option}
+          </option>
         ))}
       </select>
     </label>
@@ -2636,7 +3143,10 @@ function ReviewModal({ payload, onClose, onConfirm }) {
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-5">
                 <p className="text-sm font-semibold text-slate-900">Member and vehicle</p>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <SummaryItem label="Member Number" value={payload.memberVehicle.memberNumber || 'Not entered'} />
+                  <SummaryItem
+                    label="Member number"
+                    value={payload.memberVehicle.memberNumber || 'Not provided'}
+                  />
                   <SummaryItem label="Owner" value={payload.memberVehicle.ownerName || 'Not entered'} />
                   <SummaryItem label="Mobile" value={payload.memberVehicle.mobile || 'Not entered'} />
                   <SummaryItem label="Email" value={payload.memberVehicle.email || 'Not entered'} />
@@ -2758,7 +3268,7 @@ function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent,
             <p className="mt-5 text-xs font-semibold uppercase tracking-[0.18em] text-teal-800">Submitting application</p>
             <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Please wait a moment</h3>
             <p className="mt-3 text-sm leading-6 text-slate-600">
-              We are preparing your accident claim for backend processing and final submission.
+              We are sending your claim now. This usually takes a few seconds — please keep this page open.
             </p>
           </div>
         </div>
@@ -2780,10 +3290,8 @@ function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent,
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-rose-700">Submission failed</p>
                   <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">We could not submit the claim</h3>
                   <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-                    Please review the form details and try again.
-                    {errorMessage
-                      ? ' The message below came from your API or browser so you know what failed.'
-                      : ' If problems continue, check that the Horizon API is reachable (see environment variable VITE_API_BASE_URL).'}
+                    Please review your details and try again.
+                    {errorMessage ? ' The message below may help explain what went wrong.' : ''}
                   </p>
                   {errorMessage ? (
                     <p className="mt-3 max-w-xl whitespace-pre-wrap break-words rounded-md border border-rose-100 bg-white/90 px-3 py-2 font-mono text-xs leading-snug text-rose-950">
@@ -2823,7 +3331,7 @@ function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent,
                 <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-700">Application submitted</p>
                 <h3 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">Claim submitted successfully</h3>
                 <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-                  Your Horizon Smash Repairs accident claim has been recorded successfully and is ready for backend processing.
+                  Thank you — we have received your claim. Our team will review it and contact you if we need anything else.
                 </p>
               </div>
             </div>
@@ -2906,6 +3414,82 @@ function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent,
   );
 }
 
+function SketchVehiclePhoto({ role = 'self', mirror = false, className = 'h-full w-full object-contain' }) {
+  const src = role === 'self' ? SKETCH_CAR_SELF_SRC : SKETCH_CAR_OTHER_SRC;
+  return (
+    <img
+      src={src}
+      alt=""
+      draggable={false}
+      className={`select-none ${className}`}
+      style={mirror ? { transform: 'scaleX(-1)' } : undefined}
+    />
+  );
+}
+
+function SketchCarPreview({ role = 'self', label, accent = 'self' }) {
+  const accentClasses = accent === 'self'
+    ? 'border-red-200 bg-red-50/60'
+    : 'border-orange-200 bg-orange-50/60';
+  return (
+    <span
+      className={`inline-flex items-center gap-3 rounded-xl border px-3 py-2.5 ${accentClasses}`}
+      aria-hidden
+      title={`${label} symbol`}
+    >
+      <span className="flex h-11 w-[5.25rem] items-center justify-center rounded-lg border border-white/90 bg-transparent shadow-sm">
+        <SketchVehiclePhoto role={role} className="h-9 w-full object-contain" />
+      </span>
+      <span className="text-xs font-semibold text-slate-700">{label}</span>
+    </span>
+  );
+}
+
+function SketchVehicleGlyph({ role = 'self', mirror = false, className = 'h-full w-full' }) {
+  const palette = SKETCH_VEHICLE_PALETTE[role === 'self' ? 'self' : 'other'];
+  const gradId = useId();
+  return (
+    <svg
+      viewBox="-66 -30 132 60"
+      className={className}
+      aria-hidden
+      style={mirror ? { transform: 'scaleX(-1)' } : undefined}
+    >
+      <defs>
+        <linearGradient id={gradId} x1="0" y1="-26" x2="0" y2="26" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor={palette.bodyTop} />
+          <stop offset="1" stopColor={palette.bodyBottom} />
+        </linearGradient>
+      </defs>
+      <ellipse cx="0" cy="30" rx="52" ry="4.5" fill="#0f172a" opacity="0.08" />
+      <path
+        fill={`url(#${gradId})`}
+        stroke={palette.stroke}
+        strokeWidth="1.4"
+        strokeLinejoin="round"
+        d="M 62 0 C 66 -5 65.5 -14 58 -21 C 52 -25 46 -26 38 -26 L 22 -26 C 12 -27 4 -27 -6 -26.5 C -18 -26 -28 -26 -38 -24.5 C -50 -23 -58 -18 -63 -10 C -66 -4 -66 4 -63 10 C -58 18 -50 23 -38 24.5 C -28 26 -18 26 -6 26.5 C 4 27 12 27 22 26 L 38 26 C 46 26 52 25 58 21 C 65.5 14 66 5 62 0 Z"
+      />
+      <path fill={palette.glass} fillOpacity={palette.glassOpacity} d="M 14 -18 L 28 -20 L 36 -16 L 36 16 L 28 20 L 14 18 Z" />
+      <path fill={palette.glass} fillOpacity={palette.glassOpacity * 0.92} d="M 42 -19 L 54 -20 L 58 -16 L 58 16 L 54 20 L 42 19 Z" />
+      <rect x="-20" y="-3" width="72" height="6" fill="#fff" opacity="0.12" />
+      <ellipse cx="34" cy="-27" rx="6.5" ry="4.2" fill={palette.wheel} />
+      <ellipse cx="34" cy="27" rx="6.5" ry="4.2" fill={palette.wheel} />
+      <ellipse cx="-34" cy="-27" rx="6.5" ry="4.2" fill={palette.wheel} />
+      <ellipse cx="-34" cy="27" rx="6.5" ry="4.2" fill={palette.wheel} />
+      <ellipse cx="34" cy="-27" rx="2.8" ry="1.8" fill={palette.hub} />
+      <ellipse cx="34" cy="27" rx="2.8" ry="1.8" fill={palette.hub} />
+      <ellipse cx="-34" cy="-27" rx="2.8" ry="1.8" fill={palette.hub} />
+      <ellipse cx="-34" cy="27" rx="2.8" ry="1.8" fill={palette.hub} />
+      <ellipse cx="20" cy="-28" rx="3.2" ry="1.8" fill={palette.mirror} transform="rotate(11 20 -28)" />
+      <ellipse cx="20" cy="28" rx="3.2" ry="1.8" fill={palette.mirror} transform="rotate(-11 20 28)" />
+      <ellipse cx="59" cy="-14" rx="3.5" ry="2.2" fill={palette.headlight} transform="rotate(17 59 -14)" />
+      <ellipse cx="59" cy="14" rx="3.5" ry="2.2" fill={palette.headlight} transform="rotate(-17 59 14)" />
+      <ellipse cx="-61" cy="-12" rx="2.8" ry="2" fill={palette.taillight} />
+      <ellipse cx="-61" cy="12" rx="2.8" ry="2" fill={palette.taillight} />
+    </svg>
+  );
+}
+
 function AccidentSketchCanvas({ sketchModel, onChange }) {
   const canvasRef = useRef(null);
   const drawingRef = useRef(false);
@@ -2926,12 +3510,11 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
     const load = (src) =>
       new Promise((resolve) => {
         const img = new Image();
-        img.crossOrigin = 'anonymous';
         img.onload = () => resolve(img);
         img.onerror = () => resolve(null);
         img.src = src;
       });
-    Promise.all([load(SKETCH_CAR_SELF_IMAGE_SRC), load(SKETCH_CAR_OTHER_IMAGE_SRC)]).then(([self, other]) => {
+    Promise.all([load(SKETCH_CAR_SELF_SRC), load(SKETCH_CAR_OTHER_SRC)]).then(([self, other]) => {
       if (!cancelled) setCarStampImages({ self, other });
     });
     return () => {
@@ -3053,7 +3636,7 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [mode, selected?.type, selected?.id, carStampImages]);
+  }, [mode, selected?.type, selected?.id]);
 
   const canUndo = pastRef.current.length > 0;
   const canRedo = futureRef.current.length > 0;
@@ -3246,7 +3829,14 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
       setSelected(null);
       emit({
         ...cur,
-        vehicles: [...cur.vehicles, { id: makeSketchId('veh'), role, shape, x: p.x, y: p.y, angle: 0 }],
+        vehicles: [...cur.vehicles, {
+          id: makeSketchId('veh'),
+          role,
+          shape,
+          x: p.x,
+          y: p.y,
+          angle: 0,
+        }],
       });
       return;
     }
@@ -3335,25 +3925,24 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
     </button>
   );
 
-  const modeButtonCarThumb = (id, label, thumbSrc, mirrorThumb) => (
+  const modeButtonVehicle = (id, label, role) => (
     <button
       key={id}
       type="button"
       onClick={() => setMode(id)}
-      className={`inline-flex min-h-[2.5rem] items-center gap-1.5 rounded-xl border px-3 py-2 text-[11px] font-semibold leading-tight shadow-sm transition sm:min-h-[2.75rem] sm:gap-2 sm:px-3.5 sm:text-xs ${
+      className={`inline-flex min-h-[2.5rem] items-center gap-2 rounded-xl border px-2.5 py-2 text-[11px] font-semibold leading-tight shadow-sm transition sm:min-h-[2.75rem] sm:px-3 sm:text-xs ${
         mode === id
           ? 'border-teal-800 bg-teal-700 text-white shadow-md ring-2 ring-teal-600/30'
           : 'border-slate-200 bg-white text-slate-800 hover:border-teal-300 hover:bg-teal-50/60'
       }`}
     >
-      <span className="relative h-7 w-12 shrink-0 overflow-hidden rounded-md border border-white/40 bg-white/10 shadow-sm">
-        <img
-          src={thumbSrc}
-          alt=""
-          className={`h-full w-full object-cover ${mirrorThumb ? 'scale-x-[-1]' : ''}`}
-        />
+      <span className={`flex h-8 w-12 shrink-0 items-center justify-center rounded-lg border bg-transparent ${
+        mode === id ? 'border-white/25' : 'border-slate-200/80'
+      }`}>
+        <SketchVehiclePhoto role={role} className="h-7 w-full object-contain" />
       </span>
-      {label}
+      <span className="hidden sm:inline">{label}</span>
+      <span className="sm:hidden">{role === 'self' ? 'Yours' : 'Other'}</span>
     </button>
   );
 
@@ -3401,12 +3990,17 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
           </button>
         </div>
       </div>
-      <div className="flex flex-wrap gap-2 border-b border-slate-100 bg-white px-3 py-3 sm:gap-2 sm:px-4">
-        {modeButton('select', 'Select', MousePointer2)}
-        {modeButton('draw', 'Draw', PenLine)}
-        {modeButtonCarThumb('self-car', 'Your vehicle', SKETCH_CAR_SELF_IMAGE_SRC, false)}
-        {modeButtonCarThumb('other-car', 'Other vehicle', SKETCH_CAR_OTHER_IMAGE_SRC, true)}
-        {modeButton('label', 'Text', Type)}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b border-slate-100 bg-white px-3 py-3 sm:px-4">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {modeButton('select', 'Select', MousePointer2)}
+          {modeButton('draw', 'Draw', PenLine)}
+          {modeButton('label', 'Text', Type)}
+        </div>
+        <div className="hidden h-7 w-px shrink-0 bg-slate-200 sm:block" aria-hidden />
+        <div className="flex flex-wrap items-center gap-1.5">
+          {modeButtonVehicle('self-car', 'Your vehicle', 'self')}
+          {modeButtonVehicle('other-car', 'Other vehicle', 'other')}
+        </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -3528,20 +4122,20 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
           </div>
         </div>
       ) : null}
-      <p className="border-b border-slate-100 bg-slate-50/60 px-4 py-2 text-xs leading-snug text-slate-600">
+      <p className="border-b border-slate-100 bg-slate-50/80 px-4 py-2.5 text-xs leading-snug text-slate-600">
         {mode === 'select' &&
           (selected
             ? selected.type === 'vehicle'
-              ? 'Drag to move. Turn (15°, Shift for 5°). Flip (X) mirrors left/right. Delete removes.'
+              ? 'Drag to move. Turn (15°, Shift for 5°). Flip mirrors direction. Delete removes.'
               : 'Drag the label to move it. Use Delete to remove.'
-            : 'Tap a car or label to select it, then drag to move.')}
-        {mode === 'draw' && 'Drag to draw roads and arrows.'}
-        {mode.startsWith('self') && mode !== 'select' && 'Tap once on the map to place your vehicle.'}
-        {mode.startsWith('other') && mode !== 'label' && mode !== 'select' && 'Tap once on the map to place the other vehicle.'}
-        {mode === 'label' && (labelDraft ? 'Type label text above, then Add label.' : 'Click the sketch to choose where the label goes.') }
+            : 'Tap a vehicle or label to select it, then drag to reposition.')}
+        {mode === 'draw' && 'Drag to draw roads, lanes, and direction arrows.'}
+        {mode.startsWith('self') && mode !== 'select' && 'Tap the map to place your vehicle, then rotate it to match the road direction.'}
+        {mode.startsWith('other') && mode !== 'label' && mode !== 'select' && 'Tap the map to place the other vehicle — it faces the opposite way by default.'}
+        {mode === 'label' && (labelDraft ? 'Type label text above, then Add label.' : 'Click the sketch to choose where the label goes.')}
       </p>
-      <div className="relative bg-gradient-to-b from-slate-100/90 to-slate-200/40 p-3 sm:p-4">
-        <div className="overflow-hidden rounded-xl border border-slate-300/90 bg-white shadow-[inset_0_2px_12px_rgba(15,23,42,0.06)] ring-1 ring-white">
+      <div className="relative bg-[radial-gradient(circle_at_50%_0%,rgba(148,163,184,0.12),transparent_55%)] p-3 sm:p-4">
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-[inset_0_1px_0_rgba(255,255,255,0.9),inset_0_2px_8px_rgba(15,23,42,0.04)]">
           <canvas
             ref={canvasRef}
             width={SKETCH_CANVAS_WIDTH}
@@ -3561,94 +4155,210 @@ function AccidentSketchCanvas({ sketchModel, onChange }) {
 function SignaturePad({ value, onChange }) {
   const canvasRef = useRef(null);
   const drawingRef = useRef(false);
+  const lastPointRef = useRef(null);
+  const skipValueSyncRef = useRef(false);
   const hasSignature = Boolean(value);
-
-  const getContext = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return null;
-    const context = canvas.getContext('2d');
-    if (!context) return null;
-    context.lineCap = 'round';
-    context.lineJoin = 'round';
-    context.strokeStyle = '#0f172a';
-    context.lineWidth = 2.2;
-    return context;
-  };
 
   const getPoint = (event) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    return { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
   };
 
+  const prepareStroke = (ctx) => {
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 2.5;
+  };
+
+  const setupCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(rect.width * dpr);
+    canvas.height = Math.floor(rect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    prepareStroke(ctx);
+  };
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, rect.width, rect.height);
+  };
+
+  const exportSignature = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    skipValueSyncRef.current = true;
+    onChange(canvas.toDataURL('image/png'));
+  };
+
+  useLayoutEffect(() => {
+    setupCanvas();
+    window.addEventListener('resize', setupCanvas);
+    return () => window.removeEventListener('resize', setupCanvas);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (skipValueSyncRef.current) {
+      skipValueSyncRef.current = false;
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    if (!value) {
+      clearCanvas();
+      return;
+    }
+
+    const rect = canvas.getBoundingClientRect();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const image = new Image();
+    image.onload = () => {
+      ctx.clearRect(0, 0, rect.width, rect.height);
+      ctx.drawImage(image, 0, 0, rect.width, rect.height);
+    };
+    image.src = value;
+  }, [value]);
+
   const startDrawing = (event) => {
+    event.preventDefault();
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.setPointerCapture(event.pointerId);
     drawingRef.current = true;
-    const context = getContext();
-    if (!context) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    prepareStroke(ctx);
     const point = getPoint(event);
-    context.beginPath();
-    context.moveTo(point.x, point.y);
+    lastPointRef.current = point;
+    ctx.beginPath();
+    ctx.moveTo(point.x, point.y);
   };
 
   const draw = (event) => {
     if (!drawingRef.current) return;
-    const context = getContext();
-    if (!context) return;
+    event.preventDefault();
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    prepareStroke(ctx);
     const point = getPoint(event);
-    context.lineTo(point.x, point.y);
-    context.stroke();
-    onChange(canvasRef.current?.toDataURL('image/png') || '');
+    const last = lastPointRef.current;
+
+    if (last) {
+      const midX = (last.x + point.x) / 2;
+      const midY = (last.y + point.y) / 2;
+      ctx.quadraticCurveTo(last.x, last.y, midX, midY);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(midX, midY);
+    } else {
+      ctx.lineTo(point.x, point.y);
+      ctx.stroke();
+    }
+
+    lastPointRef.current = point;
   };
 
-  const stopDrawing = () => { drawingRef.current = false; };
+  const stopDrawing = (event) => {
+    if (!drawingRef.current) return;
+    event?.preventDefault?.();
+
+    const canvas = canvasRef.current;
+    if (canvas && event?.pointerId != null) {
+      try {
+        canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer may already be released.
+      }
+    }
+
+    drawingRef.current = false;
+    lastPointRef.current = null;
+    exportSignature();
+  };
 
   const clear = () => {
-    const canvas = canvasRef.current;
-    const context = getContext();
-    if (!canvas || !context) return;
-    context.clearRect(0, 0, canvas.width, canvas.height);
+    clearCanvas();
+    skipValueSyncRef.current = true;
     onChange('');
   };
 
   return (
-    <div className={`overflow-hidden rounded-lg border bg-white shadow-sm ${
-      hasSignature ? 'border-emerald-200' : 'border-slate-200'
-    }`}>
-      <div className="border-b border-slate-200 bg-slate-50 px-5 py-4">
-        <div className="flex items-start justify-between gap-3">
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+            <PenLine className="h-4 w-4" aria-hidden />
+          </span>
           <div>
-            <div className="inline-flex items-center gap-2 rounded-md border border-teal-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-800">
-              <PencilLine size={12} />
-              Signature Capture
-            </div>
-            <p className="mt-3 text-lg font-semibold tracking-tight text-slate-950">Digital Signature</p>
-            <p className="mt-1 max-w-md text-sm leading-6 text-slate-600">Sign inside the panel below. This signature will be saved with the claim payload for backend submission.</p>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className={`rounded-md px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${
-              hasSignature ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
-            }`}>
-              {hasSignature ? 'Signature captured' : 'Awaiting signature'}
-            </span>
-            <button type="button" onClick={clear} className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:border-slate-400 hover:bg-slate-50">Clear</button>
+            <p className="text-sm font-semibold text-slate-950">Your signature</p>
+            <p className="text-xs text-slate-500">Use your finger or mouse on the line below</p>
           </div>
         </div>
-      </div>
-      <div className="bg-white p-5">
-        <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-inner">
-          <div className="pointer-events-none absolute inset-x-5 top-5 flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">
-            <span>Authorized Signatory</span>
-            <span>Secure Input</span>
-          </div>
-          <div className="relative mt-6 overflow-hidden rounded-lg border border-slate-200 bg-white shadow-[inset_0_1px_0_rgba(255,255,255,0.85)]">
-            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(180deg,_rgba(255,255,255,0.2)_0%,_rgba(248,250,252,0.65)_100%)]" />
-            <div className="pointer-events-none absolute inset-x-6 bottom-10 border-b-2 border-dashed border-slate-300/80" />
-            <div className="pointer-events-none absolute left-6 bottom-4 text-xs font-medium uppercase tracking-[0.18em] text-slate-400">Sign Here</div>
-            <canvas ref={canvasRef} width={720} height={220} onPointerDown={startDrawing} onPointerMove={draw} onPointerUp={stopDrawing} onPointerLeave={stopDrawing} className="relative h-56 w-full touch-none" />
-          </div>
+        <div className="flex items-center gap-2">
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+            hasSignature ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+          }`}>
+            {hasSignature ? 'Signed' : 'Required'}
+          </span>
+          <button
+            type="button"
+            onClick={clear}
+            disabled={!hasSignature}
+            className="touch-target rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Clear
+          </button>
         </div>
       </div>
+
+      <div className={`relative overflow-hidden rounded-xl border-2 bg-white transition-colors ${
+        hasSignature ? 'border-emerald-200' : 'border-slate-200'
+      }`}>
+        <div className="pointer-events-none absolute inset-x-6 bottom-10 border-b border-slate-300" />
+        <div className="pointer-events-none absolute bottom-3 left-6 flex items-center gap-1.5 text-xs text-slate-400">
+          <PencilLine className="h-3.5 w-3.5" aria-hidden />
+          Sign on the line
+        </div>
+        <canvas
+          ref={canvasRef}
+          onPointerDown={startDrawing}
+          onPointerMove={draw}
+          onPointerUp={stopDrawing}
+          onPointerLeave={stopDrawing}
+          onPointerCancel={stopDrawing}
+          className="relative block h-36 w-full touch-none select-none rounded-xl bg-white sm:h-40"
+          style={{ touchAction: 'none' }}
+          aria-label="Signature pad"
+        />
+      </div>
+      <p className="text-xs leading-relaxed text-slate-500">
+        Your signature confirms the information you have provided is true and correct.
+      </p>
     </div>
   );
 }
@@ -3724,7 +4434,7 @@ function CompositeDamageMap({
   const photoBits = [];
   if (sceneAttachments.length) photoBits.push(`${sceneAttachments.length} overview`);
   if (detailAttachments.length) photoBits.push(`${detailAttachments.length} close-up`);
-  const photoSuffix = photoBits.length ? ` Â· ${photoBits.join(', ')}` : '';
+  const photoSuffix = photoBits.length ? ` · ${photoBits.join(', ')}` : '';
 
   return (
     <div className="space-y-6">
@@ -3736,11 +4446,10 @@ function CompositeDamageMap({
                 <AlertTriangle size={12} />
                 Damage Assessment
               </div>
-              <h4 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">Vehicle damage diagram</h4>
-              <p className="mt-2 text-sm leading-6 text-slate-600">
-                Mark or draw on the combined vehicle diagram (all angles on one sheet). To use different art, replace{' '}
-                <code className="rounded bg-slate-200/80 px-1 py-0.5 text-[11px] text-slate-800">public/vehicle-damage-diagram.png</code> or change{' '}
-                <code className="rounded bg-slate-200/80 px-1 py-0.5 text-[11px]">VEHICLE_DAMAGE_DIAGRAM_SRC</code> in the app.
+              <h4 className="mt-3 text-xl font-semibold tracking-tight text-slate-950 sm:text-2xl">Mark damage on your vehicle</h4>
+              <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                Tap to place markers where your vehicle was damaged, or switch to draw mode to circle affected areas.
+                Add overview and close-up photos if you have them.
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -3767,7 +4476,7 @@ function CompositeDamageMap({
             <p className="text-lg font-semibold text-slate-950">Interactive diagram</p>
             <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
               {totalMarkers} marker{totalMarkers === 1 ? '' : 's'}
-              {totalStrokes > 0 ? ` Â· ${totalStrokes} drawing${totalStrokes === 1 ? '' : 's'}` : ''}
+              {totalStrokes > 0 ? ` · ${totalStrokes} drawing${totalStrokes === 1 ? '' : 's'}` : ''}
               {photoSuffix}
             </p>
           </div>
