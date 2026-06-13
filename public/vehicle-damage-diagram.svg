@@ -32,7 +32,7 @@
     <circle cx="290" cy="78" r="22" />
     <line x1="168" y1="30" x2="168" y2="72" stroke-width="1.5" />
   </g>
-  <!-- Side profile (top, passenger  inverted layout) -->
+  <!-- Side profile (top, passenger side inverted layout) -->
   <g transform="translate(88,8)">
     <path d="M48 52h200c48 0 88-36 96-84H32c8 48 40 84 88 84z" />
     <path d="M96 24h112c36 0 68-28 80-72H64c12 44 44 72 80 72z" />

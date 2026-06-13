@@ -54,4 +54,12 @@ textarea {
     min-height: 44px;
     min-width: 44px;
   }
+  .step-strip-scroll {
+    -webkit-overflow-scrolling: touch;
+    scroll-snap-type: x proximity;
+    touch-action: pan-x;
+  }
+  .step-strip-scroll > button {
+    scroll-snap-align: center;
+  }
 }

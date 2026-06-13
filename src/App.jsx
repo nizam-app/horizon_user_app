@@ -556,7 +556,7 @@ function redrawAccidentSketch(canvas, model, carImages, selectedVehicleId) {
   }
 }
 
-const VEHICLE_DAMAGE_DIAGRAM_SRC = '/vehicle-damage-diagram.svg';
+const VEHICLE_DAMAGE_DIAGRAM_SRC = '/vehicle-damage-diagram.png';
 
 const damagePhotoCountFromState = (sceneList, detailList) =>
   (sceneList?.length ?? 0) + (detailList?.length ?? 0);
@@ -1183,43 +1183,66 @@ function DamageViewDualPhotoPanel({
 }
 
 function MobileStepStrip({ steps, currentStep, onStepChange }) {
+  const stepRefs = useRef([]);
+
+  useLayoutEffect(() => {
+    const active = stepRefs.current[currentStep];
+    active?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+  }, [currentStep]);
+
   return (
-    <div className="sticky top-0 z-20 border-b border-stone-200/90 bg-white/95 shadow-sm backdrop-blur-md xl:hidden">
+    <div className="sticky top-0 z-20 w-full overflow-hidden border-b border-stone-200/90 bg-white/95 shadow-sm backdrop-blur-md xl:hidden">
       <div className="flex items-center justify-between gap-3 px-4 py-2.5">
         <p className="text-xs font-semibold text-slate-900">
           Step {currentStep + 1} of {steps.length}
         </p>
         <p className="truncate text-xs text-slate-500">{steps[currentStep]?.title}</p>
       </div>
-      <div className="flex gap-2 overflow-x-auto px-4 pb-3 scrollbar-none">
-        {steps.map((step, index) => {
-          const active = index === currentStep;
-          const done = index < currentStep;
-          return (
-            <button
-              key={step.id}
-              type="button"
-              onClick={() => onStepChange(index)}
-              aria-current={active ? 'step' : undefined}
-              className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-left transition touch-target ${
-                active
-                  ? 'border-teal-800 bg-teal-800 text-white shadow-sm'
-                  : done
-                    ? 'border-teal-200 bg-teal-50 text-teal-900'
-                    : 'border-stone-200 bg-white text-slate-600'
-              }`}
-            >
-              <span
-                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
-                  active ? 'bg-white/15 text-white' : done ? 'bg-teal-700 text-white' : 'bg-stone-100 text-slate-600'
+      <div className="relative">
+        <div
+          className="pointer-events-none absolute inset-y-0 left-0 z-10 w-5 bg-gradient-to-r from-white/95 to-transparent"
+          aria-hidden
+        />
+        <div
+          className="pointer-events-none absolute inset-y-0 right-0 z-10 w-8 bg-gradient-to-l from-white/95 to-transparent"
+          aria-hidden
+        />
+        <nav
+          className="step-strip-scroll flex w-full max-w-full flex-nowrap gap-2 overflow-x-auto overscroll-x-contain scroll-px-4 px-4 pb-3 scrollbar-none"
+          aria-label="Claim steps"
+        >
+          {steps.map((step, index) => {
+            const active = index === currentStep;
+            const done = index < currentStep;
+            return (
+              <button
+                key={step.id}
+                ref={(node) => {
+                  stepRefs.current[index] = node;
+                }}
+                type="button"
+                onClick={() => onStepChange(index)}
+                aria-current={active ? 'step' : undefined}
+                className={`inline-flex shrink-0 items-center gap-2 rounded-full border px-3 py-2 text-left transition touch-target ${
+                  active
+                    ? 'border-teal-800 bg-teal-800 text-white shadow-sm'
+                    : done
+                      ? 'border-teal-200 bg-teal-50 text-teal-900'
+                      : 'border-stone-200 bg-white text-slate-600'
                 }`}
               >
-                {done ? <Check size={14} /> : index + 1}
-              </span>
-              <span className="text-xs font-semibold">{step.shortTitle}</span>
-            </button>
-          );
-        })}
+                <span
+                  className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                    active ? 'bg-white/15 text-white' : done ? 'bg-teal-700 text-white' : 'bg-stone-100 text-slate-600'
+                  }`}
+                >
+                  {done ? <Check size={14} /> : index + 1}
+                </span>
+                <span className="whitespace-nowrap text-xs font-semibold">{step.shortTitle}</span>
+              </button>
+            );
+          })}
+        </nav>
       </div>
       <div className="h-1 bg-stone-100">
         <div
@@ -4519,6 +4542,13 @@ function CompositeDamageMap({
               alt="Vehicle diagram for damage marking"
               className="pointer-events-none block h-auto max-h-[min(72vh,720px)] w-full object-contain select-none"
               draggable={false}
+              onError={(e) => {
+                const img = e.currentTarget;
+                if (!img.dataset.fallbackTried && diagramSrc.endsWith('.png')) {
+                  img.dataset.fallbackTried = '1';
+                  img.src = '/vehicle-damage-diagram.svg';
+                }
+              }}
             />
             <div
               role="application"
