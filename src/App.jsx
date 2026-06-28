@@ -22,7 +22,6 @@ import {
   Redo2,
   RotateCcw,
   RotateCw,
-  Shield,
   Trash2,
   Type,
   Undo2,
@@ -59,6 +58,7 @@ const roadSurfaceOptions = ['Dry', 'Wet', 'Loose', 'Flood'];
 const vehicleStateOptions = ['Moving', 'Stationary', 'Parked'];
 const trafficControlOptions = ['None', 'Stop Sign', 'Traffic Lights', 'Roundabout', 'Give Way', 'Merge'];
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const HORIZON_LOGO_URL = 'https://www.horizonsmashrepairs.com.au/frontend/images/logo.png';
 
 const wizardSteps = [
   {
@@ -2568,9 +2568,11 @@ function App() {
       <header className="bg-[#101c18] text-white">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-4 py-3 sm:px-6 lg:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-amber-400 text-slate-950 shadow-lg shadow-amber-950/20">
-              <Shield size={20} aria-hidden />
-            </div>
+            <img
+              src={HORIZON_LOGO_URL}
+              alt="Horizon Smash Repairs"
+              className="h-10 w-auto max-w-[160px] shrink-0 object-contain sm:h-11 sm:max-w-[190px]"
+            />
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">Horizon Smash Repairs</p>
               <p className="truncate text-xs text-white/60">Accident claim portal</p>
