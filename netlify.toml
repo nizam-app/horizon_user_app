@@ -1,5 +1,5 @@
 # Netlify: New → Import from Git → set Base directory to `horizon-user-app`.
-# API URL for production builds is set below (Render). Override in Netlify if needed.
+# API URL for production builds is set below.
 
 [build]
   command = "npm run build"
@@ -7,7 +7,7 @@
 
 [build.environment]
   NODE_VERSION = "20"
-  VITE_API_BASE_URL = "https://horizon-backend-4e0i.onrender.com"
+  VITE_API_BASE_URL = "https://api.horizonhub.com.au"
 
 [[redirects]]  from = "/*"
   to = "/index.html"
