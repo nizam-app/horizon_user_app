@@ -3282,6 +3282,31 @@ function ReviewModal({ payload, onClose, onConfirm }) {
 }
 
 function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent, onClose, onRetry, onStartNew }) {
+  const [copied, setCopied] = useState(false);
+
+  const copyReferenceCode = async () => {
+    if (!referenceCode) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(referenceCode);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = referenceCode;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   if (status === 'pending') {
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 backdrop-blur-sm">
@@ -3390,14 +3415,15 @@ function SubmissionStatusModal({ status, referenceCode, errorMessage, emailSent,
               </span>
               <button
                 type="button"
-                onClick={() => {
-                  if (!referenceCode) return;
-                  navigator.clipboard?.writeText(referenceCode).catch(() => {});
-                }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 transition hover:bg-slate-50"
+                onClick={copyReferenceCode}
+                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-semibold transition ${
+                  copied
+                    ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                    : 'border-slate-300 bg-white text-slate-800 hover:bg-slate-50'
+                }`}
               >
-                <Copy size={14} aria-hidden />
-                Copy code
+                {copied ? <Check size={14} aria-hidden /> : <Copy size={14} aria-hidden />}
+                {copied ? 'Copied' : 'Copy code'}
               </button>
             </div>
           </div>
